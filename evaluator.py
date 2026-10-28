@@ -27,6 +27,7 @@ import shutil
 import logging
 import argparse
 from pathlib import Path
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set, Tuple
 
@@ -937,8 +938,81 @@ def _focus_match(cv_text: str, profile: JDProfile) -> Tuple[float, str, str]:
 
 
 def _phrase_regex(phrase: str) -> "re.Pattern":
-    """Whole-word match for a job-title phrase; also accepts a plural."""
-    return re.compile(r"(?<![a-z])" + re.escape(phrase.lower()) + r"s?(?![a-z])")
+    """Whole-word match for a job-title phrase, tolerant of natural
+    morphological variants so CV wording maps onto the JD's own titles:
+
+        midwife  -> midwifery, midwives, staff nurse ...  (via synonyms too)
+        nurse    -> nurses, nursing, nursed
+        engineer -> engineers, engineering
+
+    Words before the last are matched literally (multi-word titles stay
+    precise); only the final word flexes through light suffixation.
+    """
+    words = [w for w in re.findall(r"[a-z0-9'#+.-]+", phrase.lower()) if w]
+    if not words:
+        return re.compile(r"(?!x)x")          # empty phrase: never matches
+    head, last = words[:-1], words[-1]
+
+    alts = {last}
+    if last.endswith("fe") and len(last) > 4:
+        stem = last[:-1]                       # midwif
+        alts.update({stem, stem + "s", stem + "es", stem[:-1] + "ves",
+                     stem + "ing", stem + "ed", stem + "ery"})
+    elif last.endswith("e") and len(last) > 4:
+        stem = last[:-1]                       # nurs / coordinat...
+        alts.update({stem, stem + "s", stem + "es", stem + "ing",
+                     stem + "ed", stem + "ery"})
+    elif last.endswith("y") and len(last) > 4:
+        stem = last[:-1]
+        alts.update({stem + "ies", stem + "ied", stem + "ier", stem + "y"})
+    else:
+        alts.update({last + "s", last + "es", last + "ing", last + "ed"})
+
+    tail = "(?:" + "|".join(sorted(re.escape(a) for a in alts)) + ")"
+    if head:
+        body = r"\s+".join(re.escape(w) for w in head) + r"\s+"
+        pattern = r"(?<![a-z])" + body + tail + r"(?![a-z])"
+    else:
+        pattern = r"(?<![a-z])" + tail + r"(?![a-z])"
+    return re.compile(pattern)
+
+
+# ── Curated cross-titles for professional cadres ───────────────────────
+# When a JD names one of these, the equivalents join the SAME tier, so a
+# "Midwife" posting accepts "Nursing Officer" / "Staff Nurse" histories
+# instead of failing them (and vice versa). Keys are matched against the
+# JD-derived phrases, including single words inside longer titles.
+_ROLE_SYNONYMS: Dict[str, tuple] = {
+    "midwife": ("midwifery", "midwives", "staff nurse", "nursing officer",
+                "nurse", "nursing", "sba"),
+    "midwifery": ("midwife", "midwives", "staff nurse", "nursing officer",
+                  "nurse"),
+    "midwives": ("midwife", "midwifery", "staff nurse", "nursing officer"),
+    "nurse": ("nursing officer", "staff nurse", "midwife", "midwifery",
+              "nursing"),
+    "nursing": ("nurse", "staff nurse", "nursing officer"),
+    "staff nurse": ("nurse", "nursing officer", "midwife"),
+    "nursing officer": ("nurse", "staff nurse", "midwife", "medical officer"),
+    "medical officer": ("doctor", "physician", "general practitioner"),
+    "doctor": ("medical officer", "physician"),
+    "physician": ("doctor", "medical officer"),
+    "engineer": ("engineering",),
+    "engineering": ("engineer",),
+    "specialist": ("specialist officer",),
+    "paramedic": ("paramedicine", "emergency medical technician"),
+    "technician": ("technologists",),
+}
+
+
+def _role_variants(phrase: str) -> List[str]:
+    """A tier phrase plus its curated equivalents (order preserved)."""
+    out: List[str] = [phrase]
+    for key in (phrase, *phrase.split()):
+        for syn in _ROLE_SYNONYMS.get(key, ()):
+            if syn not in out:
+                out.append(syn)
+    return out
+
 
 
 def build_role_tiers(profile: JDProfile) -> list:
@@ -973,8 +1047,13 @@ def build_role_tiers(profile: JDProfile) -> list:
         pairs: list = []
         for ph in phrases:
             ph = ph.strip().lower()
-            if ph and ph not in [p for p, _ in pairs]:
-                pairs.append((ph, _phrase_regex(ph)))
+            if not ph:
+                continue
+            # Fuzzy variants + curated cross-titles join the SAME tier.
+            for variant in _role_variants(ph):
+                v = variant.strip().lower()
+                if v and v not in [p for p, _ in pairs]:
+                    pairs.append((v, _phrase_regex(v)))
         if pairs:
             tiers.append((label, frac, pairs))
     return tiers
@@ -1209,6 +1288,117 @@ def _role_fit(cv_text: str, tiers: list) -> Tuple[float, str, str]:
     return pts, note, ""
 
 
+# ── Flexible experience / tenure parsing ───────────────────────────────
+# Works on any CV layout, not just one exact date style:
+#   "(13 Feb 2021 - Continuing)"   "13 Feb 2021 – Present"
+#   "Feb 2021 - now"               "2021 - till date"
+#   "Total year of experience: 6.4 yrs"   "6 years and 4 months"
+# Month names are parsed manually (no locale dependence).
+_MONTHS: Dict[str, int] = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7,
+    "july": 7, "aug": 8, "august": 8, "sep": 9, "sept": 9,
+    "september": 9, "oct": 10, "october": 10, "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+_MONTH_TOKEN = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+                r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+                r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_DATE_ONE = rf"(?:(?:\d{{1,2}}\s+)?{_MONTH_TOKEN}\.?\s+\d{{4}}|\d{{4}})"
+_OPEN_END = (r"present|till\s+date|to\s+date|continuing|continues|"
+             r"ongoing|running|now|till\s+now")
+DATE_RANGE_RE = re.compile(
+    rf"\(?\s*({_DATE_ONE})\s*(?:[-–—]|\bto\b)\s*({_DATE_ONE}|{_OPEN_END})\s*\)?",
+    re.IGNORECASE)
+
+
+def _parse_date_flexible(s: str) -> Optional[datetime]:
+    """Parse '13 Feb 2021', 'Feb 2021', '13 February 2021', '2021' --
+    locale-independent (manual month table, not strptime %b)."""
+    s = re.sub(r"[.,]", " ", s or "").strip().lower()
+    s = " ".join(s.split())
+    if not s:
+        return None
+    if re.fullmatch(r"\d{4}", s):
+        y = int(s)
+        return datetime(y, 1, 1) if 1950 <= y <= 2100 else None
+    m = re.fullmatch(r"(?:(\d{1,2})\s+)?([a-z]+)\.?\s*(\d{4})", s)
+    if not m:
+        return None
+    day = int(m.group(1) or 1)
+    mon = _MONTHS.get(m.group(2))
+    year = int(m.group(3))
+    if mon is None or not (1950 <= year <= 2100):
+        return None
+    try:
+        return datetime(year, mon, day)
+    except ValueError:
+        return datetime(year, mon, 1)          # e.g. 31 Feb -> 1 Feb
+
+
+def _span_years(start_s: str, end_s: str) -> Optional[float]:
+    """Years between two flexible dates; open ends ('present', 'continuing')
+    run to now. None when either side is unparseable."""
+    s0 = _parse_date_flexible(start_s)
+    if s0 is None:
+        return None
+    if re.fullmatch(_OPEN_END, (end_s or "").strip().lower()):
+        s1 = datetime.now()
+    else:
+        s1 = _parse_date_flexible(end_s)
+    if s1 is None:
+        return None
+    years = (s1 - s0).days / 365.25
+    return years if 0.0 <= years <= 40.0 else None
+
+
+def _declared_total_years(cv_text: str) -> float:
+    """A CV's own declared experience total, in years.
+
+    Catches 'Total year of experience: 6.4 yrs', 'experience: 6 years',
+    '6 years of experience', '6 years and 4 months', anywhere in the CV.
+    Returns 0.0 when the CV declares nothing.
+    """
+    low = cv_text.lower()
+    best = 0.0
+    patterns = (
+        r"total\s+(?:years?|yrs?)\s*(?:of\s+)?experience[^0-9]{0,32}(\d+(?:\.\d+)?)",
+        r"total\s+experience[^0-9]{0,32}(\d+(?:\.\d+)?)",
+        r"experience\s*(?:of|:|\-)\s*(?:total\s+)?(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\b",
+        r"(\d+(?:\.\d+)?)\s*(?:\+|plus)?\s*(?:years?|yrs?)\s*(?:of\s+)?experience",
+        r"experience\s+(?:of|:|\-)\s*(?:total\s+)?(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\b",
+    )
+    for pat in patterns:
+        for m in re.finditer(pat, low):
+            try:
+                val = float(m.group(1))
+            except ValueError:
+                continue
+            if 0.0 < val <= 40.0:
+                best = max(best, val)
+    m = re.search(
+        r"(\d+)\s*(?:years?|yrs?)\s*(?:and|&|,)\s*(\d+)\s*months?", low)
+    if m:
+        best = max(best, int(m.group(1)) + int(m.group(2)) / 12.0)
+    return round(best, 2)
+
+
+def _aggregate_span_years(cv_text: str) -> float:
+    """Sum of every distinct date range in the CV (employment block),
+    de-duplicated -- the fallback when no tenure can be tied to a title."""
+    seen: Set[Tuple[str, str]] = set()
+    total = 0.0
+    for m in DATE_RANGE_RE.finditer(cv_text):
+        key = (m.group(1).lower(), m.group(2).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        y = _span_years(m.group(1), m.group(2))
+        if y:
+            total += y
+    return round(min(total, 40.0), 2)
+
+
 def _sm_line_years(cv_text: str, tiers: list) -> Tuple[float, List[str]]:
     """Weighted YEARS of same/similar JD-line experience.
 
@@ -1231,37 +1421,10 @@ def _sm_line_years(cv_text: str, tiers: list) -> Tuple[float, List[str]]:
     if not tiers:
         return 0.0, []
 
-    from datetime import datetime
-
     lines = cv_text.splitlines()
     tenure_end = re.compile(r"\((\d+(?:\.\d+)?)\s*yrs?\s*\)$", re.IGNORECASE)
-    date_range = re.compile(
-        r"\(\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})\s*[-–]\s*"
-        r"(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}|present|till\s+date|"
-        r"to\s+date|now)\s*\)", re.IGNORECASE)
+    date_range = DATE_RANGE_RE
     enumerated = re.compile(r"^\d+\s*[.)]\s*")
-
-    def _parse_date(s: str):
-        s = " ".join(s.split())
-        for fmt in ("%d %b %Y", "%d %B %Y"):
-            try:
-                return datetime.strptime(s, fmt)
-            except ValueError:
-                continue
-        return None
-
-    def _span_years(start_s: str, end_s: str) -> Optional[float]:
-        s0 = _parse_date(start_s)
-        if s0 is None:
-            return None
-        s1 = _parse_date(end_s)
-        if s1 is None:
-            if re.match(r"present|till|to\s+date|now", end_s, re.IGNORECASE):
-                s1 = datetime.now()
-            else:
-                return None
-        years = (s1 - s0).days / 365.25
-        return years if 0.0 <= years <= 40.0 else None
 
     def _tier_hit(title_lower: str):
         for label, frac, pairs in tiers:
@@ -1290,6 +1453,14 @@ def _sm_line_years(cv_text: str, tiers: list) -> Tuple[float, List[str]]:
                 or (nxt_is_date and len(s.split()) <= 10
                     and "," not in s)
             )
+        elif (md := date_range.search(s)) is not None and (
+                enumerated.match(s)
+                or (2 <= len(s.split()) <= 14 and "," not in s)):
+            # Title and range share ONE line:
+            #   "1. Staff Nurse (Midwife) (13 Feb 2021 - Continuing)"
+            title = (s[:md.start()] + " " + s[md.end():]).strip(" |,-–—:·•()[]")
+            years = _span_years(md.group(1), md.group(2))
+            title_like = bool(title)
         elif nxt_is_date and (enumerated.match(s)
                               or (2 <= len(s.split()) <= 10
                                   and "," not in s)):
@@ -1464,112 +1635,484 @@ def extract_jd_profile(txt_path: Path) -> JDProfile:
 # SECTION 2 -- PER-CANDIDATE SCORING
 # ══════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════
+# MULTI-STEP DEEP EVALUATION PIPELINE
+#   Step 1  mandatory credential & licence verification   (_credential_check)
+#   Step 2  core domain & skill overlap (semantic)        (_skill_match)
+#   Step 3  contextual experience & sector/location fit   (_industry/_location)
+#   Step 4  custom recruiter instructions -> weights      (parse_custom_instructions)
+# ══════════════════════════════════════════════════════════════════════════
+
+# ---- Step 1: licences, registrations, certifications ----------------------
+_LICENSE_NEED_RE = re.compile(
+    r"\b(?:licen[cs]e|licen[cs]ed|licen[cs]ing|registration|registered|"
+    r"reg\.?\s*no|council|bnmc|bmdc|gmc|pmdc|bar council|medical board)\b",
+    re.IGNORECASE)
+
+_COUNCIL_NAMES = (
+    "nursing and midwifery council", "nursing council", "midwifery council",
+    "medical council", "nursing association", "health directorate",
+    "bnmc", "bmdc", "pmdc", "bar council",
+)
+
+_ACTIVE_WORDS = re.compile(
+    r"\b(?:active|valid|current|renewed|upto|until|till)\b", re.IGNORECASE)
+
+# Specialised trainings a JD may require -- matched against the JD first,
+# so they only ever score when THIS posting asks for them.
+_CERT_TOKENS = (
+    "bemonc", "bemoc", "emonc", "safe delivery", "skilled birth attendant",
+    "bls", "acls", "pals", "cpr", "itls", "als",
+    "immunization", "immunisation", "family planning",
+    "infection prevention", "infection control", "anesthesia", "anaesthesia",
+    "ccna", "ccnp", "aws certified", "azure", "pmp", "itil", "cisa",
+    "cissp", "autocad", "solidworks", "six sigma", "iso 9001", "iso 27001",
+)
+
+
+def _cert_requirements(jd_text: str) -> List[str]:
+    """Certifications/trainings THIS JD asks for (bounded, JD-derived)."""
+    jd_low = (jd_text or "").lower()
+    found = [t for t in _CERT_TOKENS if t in jd_low]
+    for m in re.finditer(
+            r"certifi(?:ed|cation)[^.\n]{0,40}?(?:in|as)\s+"
+            r"([a-z][a-z\s&/-]{2,40})", jd_low):
+        phrase = m.group(1).strip(" .,;:-")
+        if phrase and phrase not in found:
+            found.append(phrase)
+    return found[:8]
+
+
+def _registration_evidence(cv_text: str) -> str:
+    """Evidence of a professional registration/licence in the CV ('' if none)."""
+    cv_low = (cv_text or "").lower()
+    for name in _COUNCIL_NAMES:
+        if name in cv_low:
+            return name
+    m = re.search(
+        r"(?:registration|reg(?:d)?\.?\s*no\.?|licen[cs]e(?:\s+no\.?)?|"
+        r"registration\s+no)\s*[:.#/-]*\s*(?:no\.?|number|#)?\s*[:.#/-]*"
+        r"([a-z]{0,8}[-\s]?[a-z0-9]{3,20})", cv_low)
+    if m:
+        return m.group(0).strip(" .,;:-")
+    return ""
+
+
+def _token_stems(text: str) -> Set[str]:
+    """Stemmed token index of a text, for semantic (non-literal) matching."""
+    return {_stem_token(t)
+            for t in re.findall(r"[a-z0-9][a-z0-9+#'.-]*", (text or "").lower())}
+
+
+def _credential_check(cv_text: str, profile: JDProfile
+                      ) -> Tuple[float, str, str, dict]:
+    """STEP 1 -- Mandatory credential & licence verification.
+
+    Awards baseline compliance points the moment the JD's required
+    registration/licence or specialised training is found in the CV, and
+    records a (never score-killing) gap when the JD demands one and the CV
+    shows none. The returned facts feed the core-requirements audit flag.
+    """
+    jd_low = (profile.raw_text or "").lower()
+    cv_low = (cv_text or "").lower()
+    needs_lic = bool(_LICENSE_NEED_RE.search(jd_low))
+    certs = _cert_requirements(jd_low)
+    reg = _registration_evidence(cv_text) if needs_lic else ""
+
+    active = False
+    if reg:
+        at = cv_low.find(reg)
+        if at >= 0:
+            active = bool(_ACTIVE_WORDS.search(
+                cv_text[max(0, at - 90): at + len(reg) + 90]))
+
+    facts = {
+        "license_required": needs_lic,
+        "license_ok": (not needs_lic) or bool(reg),
+        "registration": reg,
+        "registration_active": active,
+        "cert_hits": [],
+    }
+    if not needs_lic and not certs:
+        return 0.0, "", "", facts
+
+    pts = 0.0
+    notes: List[str] = []
+    gaps: List[str] = []
+
+    if needs_lic:
+        if reg:
+            pts += 4.0
+            notes.append(
+                "Credentials: "
+                + ("active " if active else "")
+                + f"professional registration/licence verified ({reg})")
+        else:
+            gaps.append(
+                "The JD requires professional registration/licence -- "
+                "none was found in the CV.")
+
+    if certs:
+        stems = _token_stems(cv_text)
+        hits: List[str] = []
+        for c in certs:
+            if c in cv_low:
+                hits.append(c)
+                continue
+            words = [w for w in re.findall(r"[a-z]+", c) if len(w) > 2]
+            if words and all(_stem_token(w) in stems for w in words):
+                hits.append(c)
+        if hits:
+            facts["cert_hits"] = hits
+            pts += min(3.0, 1.5 * len(hits))
+            notes.append(
+                "Credentials: specialised training matched ("
+                + ", ".join(hits[:4]) + ")")
+        else:
+            gaps.append(
+                "Required certification/training not mentioned: "
+                + ", ".join(certs[:4]) + ".")
+
+    return (round(min(pts, 7.0), 1), " | ".join(notes), " | ".join(gaps), facts)
+
+
+# ---- Step 2: semantic skill overlap (stemming + abbreviations) ------------
+_EQUIV_GROUPS: Tuple[frozenset, ...] = (
+    frozenset({"anc", "antenatal", "antenatal care"}),
+    frozenset({"pnc", "postnatal", "post natal", "postnatal care"}),
+    frozenset({"bemonc", "bemoc", "emergency obstetric"}),
+    frozenset({"emonc", "obstetric emergency"}),
+    frozenset({"sba", "skilled birth attendant"}),
+    frozenset({"hiv", "aids"}),
+    frozenset({"tb", "tuberculosis"}),
+    frozenset({"opd", "outpatient", "out patient"}),
+    frozenset({"icu", "intensive care"}),
+    frozenset({"epi", "immunization", "immunisation"}),
+    frozenset({"bp", "blood pressure"}),
+    frozenset({"dm", "diabetes mellitus"}),
+)
+_EQUIV_BY_TOKEN: Dict[str, frozenset] = {
+    w: grp for grp in _EQUIV_GROUPS for w in grp}
+
+
+def _stem_token(t: str) -> str:
+    """Light, consistent stem so JD phrasing and CV phrasing collapse to
+    one key: counsel/counseling/counselling, manage/management,
+    deliver/delivery/deliveries ..."""
+    t = (t or "").lower().strip(".,;:()[]/'\"`*#|")
+    if len(t) <= 3 or t.isdigit():
+        return t
+    for suf in ("ement", "ment", "ation", "ition", "ies", "ied",
+                "ing", "ed", "es", "s", "e", "y"):
+        if t.endswith(suf) and len(t) - len(suf) >= 3:
+            t = t[:-len(suf)]
+            break
+    if len(t) >= 4 and t[-1] == t[-2]:        # counselling -> counsel
+        t = t[:-1]
+    return t
+
+
+def _variant_match(variant: str, stems: Set[str]) -> bool:
+    """All significant words of *variant* present (stemmed) in *stems*."""
+    parts = [p for p in re.findall(r"[a-z0-9]+", variant.lower()) if len(p) > 2]
+    return bool(parts) and all(_stem_token(p) in stems for p in parts)
+
+
+def _skill_present(skill: str, cv_low: str, cv_stems: Set[str]) -> bool:
+    """Semantic overlap between a JD skill phrase and the CV.
+
+    Literal substring first (fast path), then stemmed token matching with
+    abbreviation equivalence: 'ANC' <-> 'antenatal', 'PNC' <-> 'postnatal',
+    'BEmONC' <-> 'emergency obstetric', 'counselling' <-> 'counseling'.
+    """
+    if not skill:
+        return False
+    if skill in cv_low:
+        return True
+    words = [w for w in re.findall(r"[a-z0-9+#'.-]+", skill.lower())
+             if len(w) > 2]
+    if not words:
+        return False
+    for w in words:
+        options = _EQUIV_BY_TOKEN.get(w)
+        if options:
+            if not any(_variant_match(o, cv_stems) for o in options):
+                return False
+        elif _stem_token(w) not in cv_stems:
+            return False
+    return True
+
+
+# ---- Step 3: contextual location fit ---------------------------------------
+def _location_match(cv_text: str, location: str) -> Tuple[float, str, str]:
+    """Is the JD's location present anywhere in the CV (current address,
+    employer sites, summary)? Only scores when the JD states a location."""
+    if not location:
+        return 0.0, "", ""
+    low = (cv_text or "").lower()
+    variants: Set[str] = set()
+    for part in re.split(r"[,/()]+", location):
+        p = " ".join(part.split()).strip().lower()
+        if len(p) < 3 or p == "bangladesh":
+            continue
+        variants.add(p)
+        variants.add(p.replace("'", "").replace("`", ""))
+    variants.add(" ".join(location.split()).lower())
+    hits = sorted({v for v in variants if v and v in low})
+    if hits:
+        return (5.0,
+                f"Sector/location fit: CV mentions the JD location "
+                f"({', '.join(hits[:2])})", "")
+    return (0.0, "", f"JD location ({location}) is not mentioned anywhere in the CV.")
+
+
+# ---- Step 4: custom recruiter instructions ---------------------------------
+def parse_custom_instructions(text: str) -> Dict[str, float]:
+    """Translate free-form recruiter instructions into per-bucket weight
+    multipliers (Step 4 of the deep scan).
+
+    Heuristic keyword rules; any bucket left out keeps its weight 1.0, so
+    an empty instruction box never changes scoring. Examples that fire:
+      'prefer NGO/sector experience rather than total years'
+          -> experience x0.6, industry x1.5, role x1.25
+      'must have BNMC registration'  -> credential x1.6
+      'based in Cox's Bazar'         -> location x1.5
+    """
+    low = (text or "").lower().strip()
+    if not low:
+        return {}
+    mult: Dict[str, float] = {}
+
+    def bump(key: str, v: float) -> None:
+        mult[key] = max(mult.get(key, 1.0), v)
+
+    def cut(key: str, v: float) -> None:
+        mult[key] = min(mult.get(key, 1.0), v)
+
+    # Generic mentions first; the down-weighting rules run AFTER so they win.
+    if re.search(r"experience|tenure|years?\s+of", low):
+        bump("experience", 1.2)
+    if re.search(r"sector|industry|humanitarian|\bngo\b|similar (?:job )?"
+                 r"role|relevant (?:role|experience)|field experience|"
+                 r"same (?:domain|field)|community", low):
+        bump("industry", 1.6)
+        bump("role", 1.25)
+    if re.search(r"rather than (?:total |overall )?year|over (?:total |overall )?"
+                 r"year|instead of (?:total )?year|not total year|"
+                 r"total years?.{0,40}(?:matter|important|count)", low):
+        cut("experience", 0.6)
+        bump("industry", 1.5)
+    if re.search(r"licen[cs]e|registration|council|certificat|certified", low):
+        bump("credential", 1.6)
+    if re.search(r"location|relocat|based in|cox|dhaka|chattogram|sylhet", low):
+        bump("location", 1.5)
+    if re.search(r"education|degree|qualification|academic", low):
+        bump("education", 1.5)
+    if re.search(r"\bskill|technical|hands[- ]on|tool|software", low):
+        bump("skills", 1.35)
+    if re.search(r"language|bangla|english|arabic|fluency", low):
+        bump("language", 1.6)
+    return mult
+
+
 @dataclass
 class ScoreResult:
-    """Result of scoring one candidate CV against the active JD."""
+    """Result of scoring one candidate CV against the active JD.
+
+    core_met is the audit flag: True when the CV's qualification, required
+    registration/licence AND direct role history all satisfy the JD -- the
+    recruiter UI then never labels the candidate a 'Weak Fit'.
+    """
     score: float = 0.0
     strengths: List[str] = field(default_factory=list)
     gaps: List[str] = field(default_factory=list)
+    core_met: bool = False
+    core_facts: dict = field(default_factory=dict)
+    facts: dict = field(default_factory=dict)
 
 
-def score_candidate(text: str, profile: JDProfile) -> ScoreResult:
-    """Score one candidate CV against the dynamic JD profile.
+def score_candidate(text: str, profile: JDProfile,
+                    instructions: str = "") -> ScoreResult:
+    """Score one candidate CV against the dynamic JD profile --
+    MULTI-STEP DEEP EVALUATION PIPELINE.
 
-    Returns a ScoreResult with a total score (0-100) and lists of strengths
-    and gaps, all derived from the weighted priority pillars.
+    Step 1  mandatory credential & licence verification
+    Step 2  core domain & skill overlap (semantic)
+    Step 3  contextual experience / sector / location fit
+    Step 4  custom recruiter instructions -> dynamic bucket weights
+
+    Buckets always sum to 100 points regardless of the instruction
+    multipliers (they re-normalise each other), so the total stays on the
+    0-100 scale. core_met records the audit flag used by the recruiter
+    remark: qualification + required licence + direct role history met.
     """
     result = ScoreResult()
+    cv_low = text.lower()
+    cv_stems = _token_stems(text)
 
-    # --- Pillar 1: Core Skills & Technical Fit (40% max) ---
+    # ── Step 1: credentials & licences ────────────────────────────────
+    cred_pts, cred_note, cred_gap, cred_facts = _credential_check(text, profile)
+    if cred_note:
+        result.strengths.append(cred_note)
+    if cred_gap:
+        result.gaps.append(cred_gap)
+    result.core_facts = dict(cred_facts)
+
+    # ── Step 2: core domain & skill overlap (semantic) ────────────────
     skills_pts, skills_note, skills_gap = _skill_match(text, profile)
-    result.strengths.append(skills_note) if skills_note else None
-    result.gaps.append(skills_gap) if skills_gap else None
-    # Scale to the B_SKILLS bucket
-    skills_final = round(min(100.0, skills_pts * (B_SKILLS / 100.0)), 1) if skills_pts else 0.0
+    if skills_note:
+        result.strengths.append(skills_note)
+    if skills_gap:
+        result.gaps.append(skills_gap)
 
-    # --- Pillar 2: Years of Experience & Educational Criteria (30% max) ---
+    # ── Step 3: contextual experience / industry / location ──────────
     exp_pts, exp_note, exp_gap = _experience_match(text, profile)
-    result.strengths.append(exp_note) if exp_note else None
-    result.gaps.append(exp_gap) if exp_gap else None
-    # Scale to the B_EXP bucket
-    exp_final = round(min(100.0, exp_pts * (B_EXP / 100.0)), 1) if exp_pts else 0.0
+    if exp_note:
+        result.strengths.append(exp_note)
+    if exp_gap:
+        result.gaps.append(exp_gap)
 
-    # --- Pillar 3: Domain Knowledge / Responsibilities / Bonus Criteria (30% max) ---
-    # 3a: Focus area match
     focus_pts, focus_note, focus_gap = _focus_match(text, profile)
-    result.strengths.append(focus_note) if focus_note else None
-    result.gaps.append(focus_gap) if focus_gap else None
-    focus_final = round(min(100.0, focus_pts * (FOCUS_WEIGHT / 100.0)), 1) if focus_pts else 0.0
+    if focus_note:
+        result.strengths.append(focus_note)
+    if focus_gap:
+        result.gaps.append(focus_gap)
 
-    # 3b: Role fit (current title against SM reporting line)
     role_pts, role_note, role_gap = _role_fit(text, profile.role_tiers)
-    result.strengths.append(role_note) if role_note else None
-    result.gaps.append(role_gap) if role_gap else None
-    role_final = round(min(100.0, role_pts * (ROLE_WEIGHT / 100.0)), 1) if role_pts else 0.0
+    if role_note:
+        result.strengths.append(role_note)
+    if role_gap:
+        result.gaps.append(role_gap)
 
-    # 3c: SM-line years experience
-    sm_years, sm_role_list = _sm_line_years(text, profile.role_tiers)
-    # Small bonus for documented SM-line years (capped at 5 pts)
-    sm_bonus = round(min(5.0, sm_years * 0.5), 1) if sm_years else 0.0
+    sm_years, _sm_roles = _sm_line_years(text, profile.role_tiers)
+    declared_years = _declared_total_years(text)
+    total_years = max(sm_years, declared_years,
+                      _aggregate_span_years(text))
 
-    # 3d: Hard skills match (bonus on top of base)
-    hard_skill_pts = _hard_skill_match(text, profile.hard_skills)
-    hard_skill_bonus = round(min(5.0, hard_skill_pts * 1.0), 1) if hard_skill_pts else 0.0
-
-    # 3e: Education level match
-    edu_match, edu_levels = _education_match(text, profile.education_levels)
-    edu_final = round((8.0 if edu_match else 0.0), 1) if edu_match is not None else 0.0
-
-    # 3f: Industry keyword match
     ind_pts, ind_note, ind_gap = _industry_match(text, profile.industry_keywords)
-    result.strengths.append(ind_note) if ind_note else None
-    result.gaps.append(ind_gap) if ind_gap else None
-    ind_final = round(min(5.0, ind_pts * 1.0), 1) if ind_pts else 0.0
+    if ind_note:
+        result.strengths.append(ind_note)
+    if ind_gap:
+        result.gaps.append(ind_gap)
 
-    # 3g: Language match
+    loc_pts, loc_note, loc_gap = _location_match(text, profile.location)
+    if loc_note:
+        result.strengths.append(loc_note)
+    if loc_gap:
+        result.gaps.append(loc_gap)
+
     lang_pts, lang_note, lang_gap = _language_match(text, profile.languages)
-    result.strengths.append(lang_note) if lang_note else None
-    result.gaps.append(lang_gap) if lang_gap else None
-    lang_final = round(min(3.0, lang_pts * 0.6), 1) if lang_pts else 0.0
+    if lang_note:
+        result.strengths.append(lang_note)
+    if lang_gap:
+        result.gaps.append(lang_gap)
 
-    # --- Compute total score (always sums to 100 across pillars) ---
-    total = (skills_final + exp_final + focus_final + role_final +
-             sm_bonus + hard_skill_bonus + edu_final + ind_final + lang_final)
-    total = round(min(100.0, total), 1)
+    edu_match, edu_levels = _education_match(text, profile.education_levels)
+    hard_skill_count = sum(
+        1 for p in (profile.hard_skills or {})
+        if _skill_present(p, cv_low, cv_stems))
+    cert_hits = cred_facts.get("cert_hits", [])
 
-    # Collect all unique strengths and gaps
-    all_strengths = list(set(s for s in result.strengths if s))
-    all_gaps = list(set(g for g in result.gaps if g))
+    # ── audit flag (drives the recruiter remark & Weak-Fit floor) ─────
+    edu_ok = (profile.education_levels == [] or edu_match is not False)
+    role_ok = bool(role_pts and role_pts >= 0.6 * ROLE_WEIGHT) or bool(
+        profile.role_tiers and sm_years >= 1.0)
+    core_met = bool(edu_ok and cred_facts["license_ok"] and role_ok)
 
-    # Ensure we have at least something
+    # ── Step 4: custom recruiter instructions -> bucket weights ───────
+    # Instruction multipliers scale the SAME bucket formulas the engine
+    # always used, so blank instructions reproduce the default scoring
+    # exactly, and the final cap keeps the total on the 0-100 scale.
+    mult = parse_custom_instructions(instructions)
+
+    def _m(key: str) -> float:
+        return mult.get(key, 1.0)
+
+    skills_final = round(
+        min(100.0, skills_pts * (B_SKILLS * _m("skills") / 100.0)), 1)
+    exp_final = round(
+        min(100.0, exp_pts * (B_EXP * _m("experience") / 100.0)), 1)
+    focus_final = round(
+        min(100.0, focus_pts * (FOCUS_WEIGHT * _m("focus") / 100.0)), 1)
+    role_final = round(
+        min(100.0, role_pts * (ROLE_WEIGHT * _m("role") / 100.0)), 1)
+    edu_final = round(8.0 * _m("education"), 1) if edu_match is True else 0.0
+    cred_final = round(min(7.0, cred_pts) * _m("credential"), 1)
+    ind_final = round(min(5.0, ind_pts) * _m("industry"), 1)
+    loc_final = round(min(5.0, loc_pts)
+                      * max(_m("industry"), _m("location")), 1)
+    lang_final = round(min(3.0, lang_pts * 0.6) * _m("language"), 1)
+
+    # Direct on-role tenures + documented years stay as small bonuses.
+    sm_bonus = round(min(5.0, sm_years * 0.5), 1) if sm_years else 0.0
+    years_bonus = round(min(3.0, max(
+        (declared_years or 0.0), _aggregate_span_years(text)) * 0.4), 1)
+    hard_bonus = round(min(5.0, float(hard_skill_count)), 1)
+
+    total = round(min(100.0, skills_final + exp_final + focus_final
+                      + role_final + edu_final + cred_final + ind_final
+                      + loc_final + lang_final + sm_bonus + years_bonus
+                      + hard_bonus), 1)
+
+    # ── Weak-Fit floor: a CV whose core qualification, required licence
+    #    AND direct role history are all satisfied is never scored "weak".
+    if core_met and total < 45.0:
+        total = 45.0
+        result.strengths.append(
+            "Audit floor: core requirements (qualification, required "
+            "registration and direct role history) all satisfied — score "
+            "held at 45 so the candidate is never labelled WEAK FIT")
+
+    result.score = total
+
+    # ── audit reasoning: strengths first, weakest concerns last ───────
+    all_strengths = [s for s in dict.fromkeys(result.strengths) if s]
+    all_gaps = [g for g in dict.fromkeys(result.gaps) if g]
     if not all_strengths:
         all_strengths = ["No specific strengths extracted"]
     if not all_gaps:
         all_gaps = ["No significant gaps detected against the JD"]
 
-    return ScoreResult(
-        score=total,
-        strengths=all_strengths,
-        gaps=all_gaps,
-    )
+    result.core_met = core_met
+    result.facts = {
+        "experience_years": round(total_years, 1),
+        "on_role_years": round(sm_years, 1),
+        "declared_years": declared_years,
+        "education_levels": edu_levels,
+        "education_ok": edu_ok,
+        "hard_skills_matched": hard_skill_count,
+        "certifications": cert_hits,
+        "registration": cred_facts.get("registration", ""),
+        "registration_active": cred_facts.get("registration_active", False),
+        "weight_multipliers": {k: round(v, 2) for k, v in mult.items()},
+    }
+    return result
 
 
 def _skill_match(cv_text: str, profile: JDProfile) -> Tuple[float, str, str]:
-    """Score core skills match against the JD's hard skills list.
+    """STEP 2 -- Core domain & skill overlap (semantic, not literal).
 
-    Returns (points, note, gap_note).
+    Hard skills AND responsibilities are matched through stemmed tokens
+    with abbreviation equivalence (ANC <-> antenatal, PNC <-> postnatal,
+    counselling <-> counseling ...), so CV wording differences no longer
+    register as missing skills. Returns (points, note, gap_note).
     """
-    hard_skills = profile.hard_skills
-    if not hard_skills:
+    skills: Dict[str, float] = dict(profile.hard_skills or {})
+    for resp in (profile.responsibilities or []):
+        if resp and resp not in skills and 3 <= len(resp) <= 60:
+            skills[resp] = 1.0          # supporting weight, capped later
+    if not skills:
         return 0.0, "", ""
 
     lower = cv_text.lower()
-    matched = [phrase for phrase in hard_skills if phrase in lower]
+    stems = _token_stems(cv_text)
+    matched = [phrase for phrase in skills if _skill_present(phrase, lower, stems)]
 
     if not matched:
         return 0.0, "", (
-            "No hard skills from the JD were detected in the CV. "
-            "The CV may lack the technical keywords the JD requires."
+            "No hard skills or responsibilities from the JD were detected "
+            "in the CV. The CV may lack the technical keywords the JD "
+            "requires."
         )
 
     # Score: each matched skill contributes, capped at B_SKILLS points
@@ -1588,6 +2131,15 @@ def _skill_match(cv_text: str, profile: JDProfile) -> Tuple[float, str, str]:
 def _experience_match(cv_text: str, profile: JDProfile) -> Tuple[float, str, str]:
     """Score years-of-experience match against the JD's stated range.
 
+    Experience source priority (robust multi-step fallback):
+      1. on-role tenure years tied to the JD's own role ladder
+         (flexible date ranges + explicit '(x.yr)' tenures)
+      2. the CV's declared total ("Total year of experience: 6.4 yrs")
+      3. the sum of every distinct date range in the employment block
+    A CV that clearly HAS experience can therefore never score the
+    'no tenures identifiable' penalty just because its date layout is
+    unusual.
+
     Returns (points, note, gap_note).
     """
     min_yrs = profile.min_experience_years
@@ -1596,43 +2148,68 @@ def _experience_match(cv_text: str, profile: JDProfile) -> Tuple[float, str, str
     if min_yrs == 0.0 and max_yrs == 0.0:
         return 0.0, "", ""
 
-    # Extract SM-line years from the CV
-    sm_years, _ = _sm_line_years(cv_text, profile.role_tiers)
+    # Step A: experience on the JD's own role line.
+    onrole_years, _ = _sm_line_years(cv_text, profile.role_tiers)
 
-    if sm_years is None or sm_years == 0.0:
+    # Step B/C: declared total, then aggregated employment spans.
+    declared = _declared_total_years(cv_text)
+    span_sum = _aggregate_span_years(cv_text)
+    total_years = max(declared, span_sum)
+
+    if onrole_years and onrole_years > 0:
+        used, source = onrole_years, "on-role"
+    elif total_years > 0:
+        used, source = total_years, (
+            "total" if declared else "employment-span")
+    else:
         return 0.0, "", (
-            "No experience years on the JD's own role line could be "
-            "determined. The CV does not contain identifiable tenures."
+            "No experience years could be determined from the CV: neither "
+            "role-line tenures, a declared total, nor any date range was "
+            "identifiable."
         )
 
-    # Score based on how well the SM-line years match the JD's range
-    if min_yrs <= sm_years <= max_yrs:
-        # Perfect match within range
+    def _src_label() -> str:
+        if source == "on-role":
+            return "on-role experience"
+        if source == "total":
+            return "total experience (declared on the CV)"
+        return "total experience (calculated from employment dates)"
+
+    # Extra context when on-role years fall short but total experience is real.
+    context = ""
+    if source != "on-role" and declared and declared >= min_yrs:
+        context = f" (CV declares {declared:g} yrs total experience)"
+
+    if min_yrs <= used <= max_yrs:
         pts = round(min(B_EXP, 45.0), 1)
         note = (
-            f"Experience: {sm_years:.1f} yrs on-role experience "
+            f"Experience: {used:.1f} yrs {_src_label()} "
             f"fits the JD's required {min_yrs:.1f}-{max_yrs:.1f} yrs range"
+            f"{context}"
         )
         gap = ""
-    elif sm_years < min_yrs:
-        # Below minimum
-        deficit = min_yrs - sm_years
-        pts = round(min(B_EXP, 45.0 * (sm_years / min_yrs)), 1) if min_yrs > 0 else 0.0
+    elif used < min_yrs:
+        deficit = min_yrs - used
+        pts = round(min(B_EXP, 45.0 * (used / min_yrs)), 1) if min_yrs > 0 else 0.0
         note = (
-            f"Experience: {sm_years:.1f} yrs on-role experience, "
-            f"below the JD minimum of {min_yrs:.1f} yrs (deficit: {deficit:.1f} yrs)"
+            f"Experience: {used:.1f} yrs {_src_label()}, "
+            f"below the JD minimum of {min_yrs:.1f} yrs "
+            f"(deficit: {deficit:.1f} yrs){context}"
         )
         gap = (
-            f"CV does not meet the JD's minimum experience requirement "
-            f"of {min_yrs:.1f} years of experience on this role line."
+            f"CV shows {used:.1f} yrs {_src_label()} against the JD's "
+            f"minimum of {min_yrs:.1f} years."
         )
     else:
-        # Above maximum
-        excess = sm_years - max_yrs
-        pts = round(min(B_EXP, 45.0 * (max_yrs / sm_years)), 1) if sm_years > 0 else 0.0
+        excess = used - max_yrs
+        # Overqualification softens but never destroys the bucket: a long,
+        # relevant track record keeps at least 75% of the experience points.
+        pts = (round(min(B_EXP, 45.0 * max(max_yrs / used, 0.75)), 1)
+               if used > 0 else 0.0)
         note = (
-            f"Experience: {sm_years:.1f} yrs on-role experience, "
-            f"above the JD maximum of {max_yrs:.1f} yrs (excess: {excess:.1f} yrs)"
+            f"Experience: {used:.1f} yrs {_src_label()}, "
+            f"above the JD maximum of {max_yrs:.1f} yrs "
+            f"(excess: {excess:.1f} yrs){context}"
         )
         gap = (
             f"CV exceeds the JD's maximum experience of {max_yrs:.1f} years. "
@@ -1700,7 +2277,9 @@ def _industry_match(cv_text: str, industry_keywords: List[str]) -> Tuple[float, 
         return 0.0, "", ""
 
     lower = cv_text.lower()
-    matched = [kw for kw in industry_keywords if kw.lower() in lower]
+    stems = _token_stems(cv_text)
+    matched = [kw for kw in industry_keywords
+               if _skill_present(kw.lower(), lower, stems)]
 
     if not matched:
         return 0.0, "", (
@@ -1747,28 +2326,54 @@ def build_reasoning(result: ScoreResult) -> str:
     """Build the structured engine reasoning string for the recruiter remark.
 
     This mirrors what the UI shows in the 'Full engine reasoning' expander.
+    Leads with the audit verdict (core requirements) and the strongest
+    evidence, then the concerns -- never the reverse.
     """
     parts = []
-    if result.score >= 70:
-        parts.append(f"STRONG FIT — score {result.score:.1f}/100")
-    elif result.score >= 55:
-        parts.append(f"POTENTIAL FIT — score {result.score:.1f}/100")
-    elif result.score >= 45:
-        parts.append(f"BORDERLINE — score {result.score:.1f}/100")
+    score = result.score
+    if result.core_met and score < 70:
+        parts.append(
+            f"CORE REQUIREMENTS MET — score {score:.1f}/100 "
+            "(qualification, required registration and direct role "
+            "history all satisfied — not a weak fit despite the score)")
+    elif score >= 70:
+        parts.append(f"STRONG FIT — score {score:.1f}/100")
+    elif score >= 55:
+        parts.append(f"POTENTIAL FIT — score {score:.1f}/100")
+    elif score >= 45:
+        parts.append(f"BORDERLINE — score {score:.1f}/100")
     else:
-        parts.append(f"WEAK FIT — score {result.score:.1f}/100")
+        parts.append(f"WEAK FIT — score {score:.1f}/100")
 
     # Strengths
     if result.strengths:
-        parts.append(f"Strongest evidence: {result.strengths[0]}")
+        parts.append("Strongest evidence: " + " ; ".join(result.strengths[:3]))
     else:
         parts.append("Strongest evidence: no clear strength could be extracted")
 
     # Gaps/concerns
     if result.gaps:
-        parts.append(f"Main concern: {result.gaps[0]}")
+        parts.append("Main concern: " + result.gaps[0])
     else:
         parts.append("Main concern: no significant gap detected against the JD")
+
+    facts = result.facts or {}
+    if facts:
+        bits = []
+        if facts.get("on_role_years"):
+            bits.append(f"on-role tenure {facts['on_role_years']:g} yrs")
+        elif facts.get("experience_years"):
+            bits.append(f"experience {facts['experience_years']:g} yrs")
+        if facts.get("registration"):
+            bits.append("registration " + facts["registration"])
+        if facts.get("certifications"):
+            bits.append("training " + ", ".join(facts["certifications"][:3]))
+        if facts.get("weight_multipliers"):
+            adj = ", ".join(f"{k} x{v:g}" for k, v in
+                            facts["weight_multipliers"].items())
+            bits.append("custom instruction weights applied: " + adj)
+        if bits:
+            parts.append("Audit trail: " + " | ".join(bits))
 
     return " | ".join(parts)
 

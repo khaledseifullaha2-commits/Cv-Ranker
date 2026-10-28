@@ -147,7 +147,35 @@ The app never falls back to a committed job description — you always decide wh
 
 ### 3. Candidate Scoring
 
-The weighted priority scoring engine evaluates each candidate across **three pillars**:
+The weighted priority scoring engine evaluates each candidate across **three pillars**,
+but only after a **4-step deep-evaluation pipeline** has run:
+
+1. **Credential & licence verification** — registration/licence evidence
+   (council names, BNMC/BMDC-style registration numbers, "active" wording)
+   and specialised trainings the JD asks for (BEmONC, Safe Delivery, …)
+   award baseline compliance points and **lead the scorecard's strengths**.
+2. **Core domain & skill overlap** — hard skills *and* responsibilities are
+   matched semantically: stemmed tokens plus abbreviation equivalence
+   (`ANC` ↔ antenatal, `PNC` ↔ postnatal, `counselling` ↔ `counseling`).
+3. **Contextual experience & sector fit** — industry keywords plus the JD's
+   location anywhere in the CV (summary, addresses, employer sites), with
+   experience taken from flexible date ranges (`13 Feb 2021 – Continuing`,
+   `Total year of experience: 6.4 yrs`): role-line tenure is preferred, and
+   declared/aggregated totals are the fallback so unusual CV layouts are
+   never penalised as "no experience".
+4. **Custom recruiter instructions** — free text in the sidebar (e.g.
+   *"prefer sector experience rather than total years"*) is parsed into
+   per-category weight multipliers for the whole run.
+
+**Fuzzy titles:** job titles match morphologically
+(`midwife` → `midwifery` / `midwives`, `nurse` → `nursing`) plus curated
+cross-titles (`Midwife` ↔ `Staff Nurse` ↔ `Nursing Officer`), so medical,
+technical and humanitarian cadres map onto the JD's role ladder instead of
+failing it.
+
+**Weak-Fit guard:** when a CV's qualification, required registration and
+direct role history are all satisfied, the score is never labelled
+WEAK FIT (it is floored at 45) and the remark explains the audit.
 
 #### Pillar 1: Core Skills & Technical Fit (40% max)
 - Matches CV text against the JD's hard skills list
@@ -155,7 +183,7 @@ The weighted priority scoring engine evaluates each candidate across **three pil
 - Notes gaps where JD skills are absent from the CV
 
 #### Pillar 2: Years of Experience & Educational Criteria (30% max)
-- **Experience matching** — Compares candidate's on-role years (tenures on the JD's own role line) against the JD's required range
+- **Experience matching** — Compares candidate's experience against the JD's required range: on-role tenures first, then the CV's declared total (`Total year of experience: 6.4 yrs`), then aggregated employment date spans
   - Perfect fit within range: full points
   - Below minimum: proportional reduction
   - Above maximum: proportional reduction
@@ -276,6 +304,15 @@ FOCUS_AREA = ""   # default: derive from the uploaded JD
 ```
 
 Related focus phrases are mined from the active JD text — nothing is hardcoded, and nothing carries over from a previously loaded posting.
+
+### Custom Recruiter Instructions
+
+The sidebar's **Custom recruiter instructions** box takes free-form guidance.
+`parse_custom_instructions()` in `evaluator.py` maps keywords to weight
+multipliers for the run: sector/NGO preference, licence/registration,
+location, education, skills and language mentions boost their category;
+"…rather than total years of experience" down-weights raw tenure in favour
+of sector fit. Blank input leaves the engine defaults untouched.
 
 ### Role Tiers
 

@@ -394,6 +394,89 @@ check("no exception on boot", not _at.exception,
       str([str(e.value)[:200] for e in _at.exception]))
 check("no st.error on boot", not _at.error, str([m.value[:120] for m in _at.error]))
 
+print("\n=== 8. multi-step deep evaluation (medical JD vs medical CV) ===")
+_mjd = (
+    "Midwife\n"
+    "Miracle Health Society (fictional NGO)\n"
+    "Location: Cox's Bazar, Bangladesh\n"
+    "Experience: 3 to 5 years\n"
+    "Education: Diploma in Midwifery\n"
+    "Requirements:\n"
+    "- Registration with Bangladesh Nursing and Midwifery Council (BNMC) mandatory\n"
+    "- BEmONC / Safe Delivery training preferred\n"
+    "- ANC/PNC care, delivery management, patient counselling, infection control\n"
+    "- Experience in NGO / humanitarian health settings preferred\n"
+)
+_jd_path = ROOT / "_smoke_midwife_jd.txt"
+_jd_path.write_text(_mjd, encoding="utf-8")
+_mprof = ev.extract_jd_profile(_jd_path)
+_jd_path.unlink()
+_mcv = (
+    "RAHIMA KHATUN\nStaff Nurse (Midwife)\nCox's Bazar, Bangladesh\n"
+    "Total year of experience: 6.4 yrs\n"
+    "Registration No: BNMC-2019-4521 (Active)\n\n"
+    "Work Experience\n"
+    "1. Staff Nurse (Midwife)\n(13 Feb 2021 - Continuing)\n"
+    "Miracle General Hospital, Cox's Bazar\n"
+    "- ANC/PNC care, safe delivery management, patient counselling\n"
+    "- Infection control, BEmONC trained\n\n"
+    "2. Community Midwife\n(Feb 2019 - Jan 2021)\n"
+    "Diploma in Midwifery\n- ANC visits\n"
+)
+_minstr = "Prefer NGO sector experience rather than total years of experience"
+res_m = ev.score_candidate(_mcv, _mprof, _minstr)
+
+check("focus derived from the medical JD", ev.FOCUS_AREA.startswith("mid"),
+      ev.FOCUS_AREA)
+check("declared total years parsed",
+      ev._declared_total_years(_mcv) == 6.4,
+      str(ev._declared_total_years(_mcv)))
+check("open-ended date ranges parse ('- Continuing')",
+      ev._aggregate_span_years(_mcv) >= 4.0,
+      str(ev._aggregate_span_years(_mcv)))
+check("midwife tier accepts cross-titles",
+      any(p == "nursing officer" for p, _ in _mprof.role_tiers[0][2]),
+      ",".join(p for p, _ in _mprof.role_tiers[0][2][:6]))
+_cur = ev._find_current_role(_mcv.lower(), _mprof.role_tiers)
+check("fuzzy current-role match (Staff Nurse -> midwife post)",
+      _cur[1] != "" and abs(_cur[3] - 1.0) < 1e-9, str(_cur[:2]))
+check("credential note leads the strengths",
+      bool(res_m.strengths) and res_m.strengths[0].startswith("Credentials"),
+      res_m.strengths[0][:80] if res_m.strengths else "-")
+_im = ev.parse_custom_instructions(_minstr)
+check("custom instructions parsed to weights",
+      _im.get("experience", 1.0) < 1.0 and _im.get("industry", 1.0) > 1.0,
+      str(_im))
+check("semantic skill match (ANC ~ antenatal)",
+      ev._skill_present("antenatal care", "we gave anc care at clinic",
+                        ev._token_stems("we gave anc care at clinic")),
+      "anc+care")
+check("strong medical CV: core met, never weak",
+      res_m.core_met and res_m.score >= 45.0
+      and "WEAK" not in ev.build_reasoning(res_m),
+      f"{res_m.score} core={res_m.core_met}")
+_mweak = ev.score_candidate(
+    "JOHN DOE\nAccountant\nDhaka\nWork Experience\n"
+    "1. Accounts Officer\n(01 Jan 2018 - 30 Jun 2021)\n- ledger management\n",
+    _mprof, "")
+check("unrelated CV scores lower + is not core-qualified",
+      _mweak.score < res_m.score and not _mweak.core_met
+      and _mweak.score < 45.0,
+      f"{_mweak.score} core={_mweak.core_met}")
+check("blank instructions = no weight changes",
+      ev.parse_custom_instructions("") == {}, "ok")
+_r70 = recruiter_remark(
+    78.0,
+    ["Core strengths for this role: active professional registration (bnmc).",
+     "Experience: 6.0 yrs on-role.", "Industry: NGO matched."],
+    [], (), True)
+check("70+ remark highlights core strengths",
+      "Core strengths:" in _r70 and "not a weak fit" in _r70,
+      _r70[:90])
+check("core-met candidate never labelled WEAK FIT",
+      not recruiter_remark(45.0, ["Core requirements fulfilled."],
+                           [], (), True).startswith("WEAK"), "ok")
+
 print("\n" + "=" * 70)
 print("RESULT:", "ALL PASS" if not fails else "%d FAILED -> %s" % (len(fails), fails))
 sys.exit(1 if fails else 0)

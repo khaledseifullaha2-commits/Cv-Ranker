@@ -83,7 +83,7 @@ except Exception as _engine_exc:  # pragma: no cover - defensive
 MAX_FILE_MB = 10                 # per uploaded file
 MAX_JD_MB = 10                   # per job-description file
 MAX_TOTAL_MB = 150               # whole batch
-MAX_FILES = 300                  # per batch
+MAX_FILES = 2000                 # per batch — increased from 300 to support 2000+ CVs
 MAX_JD_CHARS = 120_000           # JD text cap (JDs are a few kB)
 MAX_PAGES = 25                   # pages read per PDF (same as the CLI)
 ALLOWED_EXTS = (".pdf", ".docx")
@@ -394,8 +394,14 @@ def verdict_of(score: float) -> Tuple[str, str]:
 
 
 def recruiter_remark(score: float, strengths: List[str], gaps: List[str],
-                     bonus_hits: Sequence[str] = ()) -> str:
-    """The structured 'Recruiter Summary Remark' shown on every scorecard."""
+                     bonus_hits: Sequence[str] = (),
+                     core_met: bool = False) -> str:
+    """The structured 'Recruiter Summary Remark' shown on every scorecard.
+
+    For strong candidates it foregrounds the core strengths (first in the
+    strengths list); when the engine's core-requirements audit passed
+    (core_met), the remark can never read as a weak-fit verdict.
+    """
     label, action = verdict_of(score)
     lead = strengths[0] if strengths else "no clear strength could be extracted from the CV text"
     gap = gaps[0] if gaps else "no significant gap detected against the JD"
@@ -404,6 +410,15 @@ def recruiter_remark(score: float, strengths: List[str], gaps: List[str],
         f"Strongest evidence: {lead}",
         f"Main concern: {gap}",
     ]
+    if score >= 70 and strengths:
+        top = [s for s in strengths[1:4] or strengths[:1] if s]
+        if top:
+            parts.append("Core strengths: " + " ; ".join(top) + ".")
+    if core_met:
+        parts.append(
+            "Core requirements (required qualification, professional "
+            "registration and direct role history) verified — this "
+            "candidate is not a weak fit.")
     if bonus_hits:
         parts.append("Bonus criteria matched: " + ", ".join(bonus_hits) + ".")
     elif score < 45:
@@ -451,6 +466,45 @@ def education_verdict(text: str, accepted: Sequence[str]) -> Optional[Tuple[bool
     return meets, levels
 
 
+def customize_instructions(score: float, strengths: Sequence[str],
+                           core_met: bool = False,
+                           facts: Optional[Dict] = None) -> str:
+    """Step-4 aware audit line prepended to the candidate's strengths.
+
+    - score >= 70  -> foreground the core strengths a recruiter must see
+      first (active registration, specialised training, direct tenure).
+    - core_met only -> explain in plain words WHY this is not a weak fit
+      even though other buckets scored low.
+    """
+    facts = facts or {}
+    if score >= 70:
+        heads: List[str] = []
+        if facts.get("registration"):
+            heads.append(
+                ("active " if facts.get("registration_active") else "")
+                + f"professional registration ({facts['registration']})")
+        if facts.get("certifications"):
+            heads.append("specialised training ("
+                         + ", ".join(facts["certifications"][:3]) + ")")
+        yrs = facts.get("on_role_years") or facts.get("experience_years")
+        if yrs:
+            heads.append(f"{yrs:g} yrs of direct experience in this role line")
+        if facts.get("education_levels"):
+            heads.append("qualification verified ("
+                         + ", ".join(facts["education_levels"][:3]) + ")")
+        if not heads:
+            heads = [s.split(".")[0] for s in strengths[:3] if s]
+        if not heads:
+            return ""
+        return ("Core strengths for this role: " + "; ".join(heads)
+                + ". These are the decisive factors behind the strong score.")
+    if core_met:
+        return ("Core requirements fulfilled — the required qualification, "
+                "professional registration and direct role history are all "
+                "present; treat as a viable candidate, not a weak fit.")
+    return ""
+
+
 def export_frame(rows: Sequence[Dict]) -> pd.DataFrame:
     """Flatten the scorecard rows into an export-ready table."""
     return pd.DataFrame([
@@ -495,7 +549,7 @@ if "results" not in st.session_state:
     st.session_state.results = None
 if "meta" not in st.session_state:
     st.session_state.meta = {}
-
+scored = []  # initialized for safe referencing outside the run block
 _OVERRIDE_KEYS = ("exp_min", "exp_max", "edu_levels", "strict_edu",
                   "bonus_kw", "bonus_per", "bonus_cap")
 
@@ -603,6 +657,20 @@ with st.sidebar:
     b1, b2 = st.columns(2)
     bonus_per = b1.slider("Points per match", 0.0, 5.0, 1.0, 0.5, key="bonus_per")
     bonus_cap = b2.slider("Max bonus", 0.0, 20.0, 6.0, 1.0, key="bonus_cap")
+
+    st.markdown("**Custom recruiter instructions**")
+    st.text_area(
+        "Priority weighting for this run (optional)",
+        key="custom_instructions",
+        height=88,
+        placeholder=("Prefer sector/NGO field experience rather than total "
+                     "years of experience\nMust hold active BNMC registration"),
+        help=("Step 4 of the deep scan parses this text and adjusts that "
+              "category's weight for every candidate in the run: "
+              "sector/NGO preference, licence/registration, location, "
+              "education, skills and language mentions. Blank = engine "
+              "defaults (weights unchanged)."),
+    )
 
     if st.button("↺ Reset overrides to the JD's own values", use_container_width=True):
         for k in _OVERRIDE_KEYS:
@@ -730,6 +798,7 @@ if run:
         excl_list = split_keywords(exclude_kw)
         req_list = split_keywords(require_kw)
         bonus_list = split_keywords(bonus_kw)
+        custom_text = st.session_state.get("custom_instructions", "") or ""
 
         work = copy.deepcopy(profile)
         lo, hi = float(exp_min), float(exp_max)
@@ -804,7 +873,7 @@ if run:
 
             # ── 4. score + bonus criteria ────────────────────────────────
             try:
-                result = ev.score_candidate(text, work)
+                result = ev.score_candidate(text, work, custom_text)
             except Exception as exc:                      # noqa: BLE001
                 n_errors += 1
                 rows.append(_row(up.name, 0.0, "SCORING ERROR",
@@ -827,9 +896,16 @@ if run:
                 gaps = [f"Possible blacklisted candidate: {verdict.review}."] + gaps
             n_ranked += 1
 
+            # Core-strengths / audit line leads the scorecard narrative.
+            audit_line = customize_instructions(
+                final, strengths, final_result.core_met, final_result.facts)
+            if audit_line:
+                strengths = [audit_line] + strengths
+
             rows.append(_row(
                 up.name, final, status_label,
-                recruiter_remark(final, strengths, gaps, hits),
+                recruiter_remark(final, strengths, gaps, hits,
+                                 final_result.core_met),
                 reasoning, strengths, gaps, bonus,
             ))
 
