@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CV ↔ JD Matcher — site-management screening in your browser</title>
+    <meta
+      name="description"
+      content="Screen candidate CVs against a job description with a transparent, rule-based score. Runs entirely in your browser — no CV is ever uploaded."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="color-scheme" content="light dark" />
+    <!--
+      No inline scripts and no eval anywhere in the app, so the page works under
+      a CSP without 'unsafe-inline' / 'unsafe-eval'. The Worker sends the real
+      (header-based) policy; this meta tag is the fallback when the files are
+      opened from a plain static host.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+Candidate_Name,Phone_Number,Blacklist_Status,Notes
+"Rafiul Karim","01700000001",blacklisted,"Synthetic demo entry - phone match excludes"
+"Nusrat Jahan","01700000002",flagged,"Synthetic demo entry - name match only - review needed"
+"Tanvir Hossain","01700000003",off,"Synthetic demo entry - not on blacklist"
+"Sadia Rahman","01700000004,01700000005",off,"Synthetic demo entry - not on blacklist"
+"Imran Kabir","01700000006",off,"Synthetic demo entry - not on blacklist"
+"Farhana Akter","01700000007",off,"Synthetic demo entry - not on blacklist"
+"Sabbir Ahmed","01700000008",off,"Synthetic demo entry - not on blacklist"
+"Mehjabin Chowdhury","01700000009",off,"Synthetic demo entry - not on blacklist"
+"Arif Billah","01700000010,01700000011",off,"Synthetic demo entry - not on blacklist"
+"Rumana Islam","01700000012",off,"Synthetic demo entry - not on blacklist"

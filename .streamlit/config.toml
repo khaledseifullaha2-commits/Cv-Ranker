@@ -1,0 +1,20 @@
+# Streamlit configuration for the CV ↔ JD Matcher.
+# Loaded automatically from the working directory when you run `streamlit run app.py`.
+
+[browser]
+# Never phone home: no CV data, no usage telemetry, no external beacons.
+gatherUsageStats = false
+
+[server]
+# First line of defence for uploads; app.py enforces its own stricter
+# per-file (10 MB) and per-batch (150 MB / 300 files) budgets on top of this.
+maxUploadSize = 150
+# Only run as a script when a connected browser triggers a rerun — never
+# allow arbitrary code execution through the URL.
+enableXsrfProtection = true
+# Standard auto-reload on save; the watcher only reads local source files and
+# exposes nothing over the network.
+fileWatcherType = "auto"
+
+[client]
+toolbarMode = "minimal"

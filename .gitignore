@@ -1,0 +1,55 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Candidate data and screening output — NEVER commit these.
+# A public repository containing real CVs, phone numbers or a blacklist is a
+# personal-data leak (and, in most jurisdictions, a reportable one).
+# ─────────────────────────────────────────────────────────────────────────────
+2_Active_CVs/
+TOP_CV/
+TOP_CV_*/
+OLD_TOP_CV*/
+Evaluation_Output/
+3_Evaluation_Output/
+blacklist.csv
+
+# The client's own posting. It names the client, the salary and the location —
+# it is their material, not yours to publish. The app never falls back to a
+# committed JD: the recruiter uploads one (UI) or drops it here.
+1_Active_JD/
+
+# Raw posting files (PDF/DOCX) that land in data/ — real postings, never commit.
+data/*.pdf
+data/*.docx
+data/*.doc
+# The committed data/ fixtures are the synthetic .txt/.csv demo pair only.
+data/*.xlsx
+data/*.xls
+
+# Root-level scratch dumps: per-candidate debug notes that contain real names
+# and phone numbers. `requirements.txt` is the one root .txt that is the
+# project, so it is explicitly kept.
+/*.txt
+!/requirements.txt
+
+# Verification fixtures are built from real CV text.
+.verify/
+
+# ── Local environment / scratch ─────────────────────────────────────────────
+.venv/
+.freebuff/
+__pycache__/
+*.pyc
+*.log
+*.tmp
+
+# Archived pre-scrub git history created by scripts/publish-github.sh —
+# it contains the pre-cleanup snapshot, so it must never be committed.
+.git-pre-scrub-backup*/
+
+# ── Web app ─────────────────────────────────────────────────────────────────
+web/node_modules/
+web/dist/
+web/.vite/
+# Local wrangler/miniflare state: sqlite caches, built bundles and source maps
+# produced by `wrangler dev`. Build output, not source.
+web/.wrangler/
+.wrangler/

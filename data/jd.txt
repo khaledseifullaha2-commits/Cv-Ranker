@@ -1,0 +1,46 @@
+Site Management Field Assistant
+Meridian Relief Foundation (fictional example organization)
+Location: Example District, Bangladesh
+Salary: BDT 90,000 monthly (example figure)
+Experience: 3 to 5 years
+Education: Bachelor's degree in Social Science, Law, or Communication preferred
+
+Requirements:
+- 3 to 5 years of experience in a site management or field coordination role
+- Experience with NGOs, consulting firms, or manpower recruitment
+- Background in project management or team management
+- Ability to work with minimal supervision
+- Fluency in both Bangla and English
+- Working knowledge of local community languages is advantageous
+
+Responsibilities:
+- Organize field team activities for site-level community participation
+- Support the Site Management Officer in designing capacity building plans
+- Support the roll-out of community-based feedback mechanisms
+- Maintain up-to-date records of community groups and governance structures
+- Maintain relationships with service providers and local authorities
+- Support site-level assessments and report service provision challenges
+- Keep abreast of community governance issues at assigned sites
+- Anticipate constraints to project implementation and work out solutions
+- Ensure noticeboards contain up-to-date service information
+- Control the quality of data collected by field staff
+- Prepare preliminary analysis of data and activity reports
+- Promote adherence to safety and security procedures
+- Prepare finance and procurement documents and keep expense records
+- Application deadline: 30 Nov 2026 (example)
+
+Core competencies:
+- Inclusion and respect for diversity
+- Integrity and transparency
+- Professionalism
+- Teamwork and collaboration
+- Delivering results
+- Managing and sharing knowledge
+- Accountability
+- Communication
+- Leadership
+- Empowering others and building trust
+- Strategic thinking and vision
+
+NOTE: This is a strictly fictional example JD committed for demo/testing
+purposes only. Real postings belong in 1_Active_JD/ (gitignored).

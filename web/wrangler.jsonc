@@ -1,0 +1,16 @@
+// Local workerd check for the built app (no Cloudflare account needed):
+//   npm run build && npx wrangler dev
+// The deployed site uses the same Worker + assets layout (see freebuff.deploy.json).
+{
+  "name": "cv-jd-matcher-web",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Without this the assets layer answers matching requests itself and the
+    // Worker never runs — i.e. NO security headers would be sent. Keep it on.
+    "run_worker_first": true
+  }
+}
