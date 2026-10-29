@@ -156,6 +156,7 @@ section[data-testid="stSidebar"] .css-1d3kgpb {
 }
 </style>
 """
+st.markdown(_CSS, unsafe_allow_html=True)
 
 try:  # the engine must not be able to take the whole app down
     # Make sure the engine is importable no matter how this file was started
@@ -1017,40 +1018,37 @@ if run:
         for i, r in enumerate(scored, 1):
             r["Rank"] = i
 
-# ── Position-Based Output Folders ──────────────────────────────────────
-# Create TOP_CV folder named after the job position
-position_title = profile.title or "Untitled_Position"
-safe_pos = "".join(c if c.isalnum() or c in " _-" else "_" for c in position_title).strip()
-topcv_dir = Path("3_Evaluation_Output") / safe_pos / "TOP_CV"
-topcv_dir.mkdir(parents=True, exist_ok=True)
+        # ── Position-Based Output Folders ──────────────────────────────────────
+        # Create TOP_CV folder named after the job position
+        position_title = profile.title or "Untitled_Position"
+        safe_pos = "".join(c if c.isalnum() or c in " _-" else "_" for c in position_title).strip()
+        topcv_dir = Path("3_Evaluation_Output") / safe_pos / "TOP_CV"
+        topcv_dir.mkdir(parents=True, exist_ok=True)
 
-# Copy top-ranked candidates to TOP_CV with structured filenames
-for i, r in enumerate(scored, 1):
-    status = r["Status"]
-    if status in ("RANKED", "REVIEW"):
-        # Find the original uploaded file by name
-        cv_name = r["Candidate_File_Name"]
-        # Determine original extension
-        orig_ext = os.path.splitext(cv_name)[1].lower() or ".pdf"
-        if orig_ext not in ALLOWED_EXTS:
-            orig_ext = ".pdf"
-        clean_name = re.sub(r"[^\w\s\-]", "", cv_name.replace(".pdf", "").replace(".docx", ""))
-        clean_name = re.sub(r"\s+", "_", clean_name).strip("_")
-        new_filename = f"Rank_{i}_Score_{int(r['Match_Score']):02d}_{clean_name}{orig_ext}"
-        dest_path = topcv_dir / new_filename
-        # Save the CV file - read uploaded bytes and write to destination
-        # Match by candidate name to the original upload
-        for up in uploads:
-            if up.name == cv_name or up.name.replace(".pdf", "").replace(".docx", "") == clean_name:
-                try:
-                    import shutil
-                    # Write bytes directly instead of shutil.copy2 with UploadedFile
-                    dest_path.write_bytes(up.data)
-                except Exception:
-                    pass
-                break
-
-
+        # Copy top-ranked candidates to TOP_CV with structured filenames
+        for i, r in enumerate(scored, 1):
+            status = r["Status"]
+            if status in ("RANKED", "REVIEW"):
+                # Find the original uploaded file by name
+                cv_name = r["Candidate_File_Name"]
+                # Determine original extension
+                orig_ext = os.path.splitext(cv_name)[1].lower() or ".pdf"
+                if orig_ext not in ALLOWED_EXTS:
+                    orig_ext = ".pdf"
+                clean_name = re.sub(r"[^\w\s\-]", "", cv_name.replace(".pdf", "").replace(".docx", ""))
+                clean_name = re.sub(r"\s+", "_", clean_name).strip("_")
+                new_filename = f"Rank_{i}_Score_{int(r['Match_Score']):02d}_{clean_name}{orig_ext}"
+                dest_path = topcv_dir / new_filename
+                # Save the CV file - read uploaded bytes and write to destination
+                # Match by candidate name to the original upload
+                for up in uploads:
+                    if up.name == cv_name or up.name.replace(".pdf", "").replace(".docx", "") == clean_name:
+                        try:
+                            # Write bytes directly instead of shutil.copy2 with UploadedFile
+                            dest_path.write_bytes(up.data)
+                        except Exception:
+                            pass
+                        break
 
         st.session_state.results = rows
         st.session_state.rejected = rejected
@@ -1105,85 +1103,97 @@ if meta.get("flagged"):
 if not ranked:
     st.warning("No candidate passed the filters. Loosen the keyword or education filters.")
 
-# ── Table ─────────────────────────────────────────────────────────────────
-if ranked:
-    table = export_frame(ranked)
-    st.dataframe(table, hide_index=True)
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Ranked Table",
+    "📋 Candidate Scorecards",
+    "🚫 Audit Trail & Excluded",
+    "📥 Export Reports"
+])
 
-# ── Scorecards ────────────────────────────────────────────────────────────
-visible = [r for r in ranked if r["Match_Score"] >= min_score][:int(top_n)]
-if visible:
-    st.markdown("### Candidate scorecards")
-    for r in visible:
-        label, _ = verdict_of(r["Match_Score"])
-        badge = "🟩" if r["Status"] == "REVIEW" else ""
-        head = (f"#{r['Rank']} · {r['Candidate_File_Name']} · "
-                f"{r['Match_Score']:.1f}/100 · {label} {badge}")
-        with st.expander(head, expanded=False):
-            a, b, c = st.columns([1, 1, 2])
-            a.metric("Score", f"{r['Match_Score']:.1f}")
-            b.metric("Bonus", f"+{r['Bonus_Points']:g}")
-            c.metric("Status", r["Status"])
+# ── Tab 1: Table ──────────────────────────────────────────────────────────
+with tab1:
+    if ranked:
+        table = export_frame(ranked)
+        st.dataframe(table, hide_index=True, use_container_width=True)
+    else:
+        st.info("No candidates ranked yet.")
 
-            st.markdown("**✅ Strengths**")
-            for s in r["Strengths"] or ["None recorded."]:
-                st.markdown(f"- {s}")
+# ── Tab 2: Scorecards ─────────────────────────────────────────────────────
+with tab2:
+    visible = [r for r in ranked if r["Match_Score"] >= min_score][:int(top_n)]
+    if visible:
+        for r in visible:
+            label, _ = verdict_of(r["Match_Score"])
+            badge = "🟩" if r["Status"] == "REVIEW" else ""
+            head = (f"#{r['Rank']} · {r['Candidate_File_Name']} · "
+                    f"{r['Match_Score']:.1f}/100 · {label} {badge}")
+            with st.expander(head, expanded=False):
+                a, b, c = st.columns([1, 1, 2])
+                a.metric("Score", f"{r['Match_Score']:.1f}")
+                b.metric("Bonus", f"+{r['Bonus_Points']:g}")
+                c.metric("Status", r["Status"])
 
-            st.markdown("**⚠️ Weaknesses / gaps**")
-            for g in r["Weaknesses"] or ["None recorded."]:
-                st.markdown(f"- {g}")
+                st.markdown("**✅ Strengths**")
+                for s in r["Strengths"] or ["None recorded."]:
+                    st.markdown(f"- {s}")
 
-            st.markdown("**📝 Recruiter summary remark**")
-            st.info(r["Recruiter_Remark"])
+                st.markdown("**⚠️ Weaknesses / gaps**")
+                for g in r["Weaknesses"] or ["None recorded."]:
+                    st.markdown(f"- {g}")
 
-            with st.expander("Full engine reasoning"):
-                st.caption(r["Summary_Reasoning"])
+                st.markdown("**📝 Recruiter summary remark**")
+                st.info(r["Recruiter_Remark"])
 
-# ── Excluded / unreadable ─────────────────────────────────────────────────
-if rest:
-    with st.expander(
-        f"🚫 Excluded or not evaluated ({len(rest)})", expanded=False
-    ):
+                with st.expander("Full engine reasoning"):
+                    st.caption(r["Summary_Reasoning"])
+    else:
+        st.info("No scorecards meet the selection criteria.")
+
+# ── Tab 3: Excluded / unreadable ──────────────────────────────────────────
+with tab3:
+    if rest:
         for r in rest:
             st.markdown(f"**{r['Candidate_File_Name']}** — `{r['Status']}`")
             st.caption(r["Recruiter_Remark"])
+            st.divider()
+    else:
+        st.success("No candidates were excluded from this batch.")
 
-# ── Export ────────────────────────────────────────────────────────────────
-st.divider()
-st.subheader("⬇️ Export report")
-export_df = export_frame(rows)          # ranked first, then excluded/errors
-export_df = pd.concat(
-    [export_df[export_df["Status"].isin(["RANKED", "REVIEW"])],
-     export_df[~export_df["Status"].isin(["RANKED", "REVIEW"])]],
-    ignore_index=True,
-)
+# ── Tab 4: Export ─────────────────────────────────────────────────────────
+with tab4:
+    export_df = export_frame(rows)          # ranked first, then excluded/errors
+    export_df = pd.concat(
+        [export_df[export_df["Status"].isin(["RANKED", "REVIEW"])],
+         export_df[~export_df["Status"].isin(["RANKED", "REVIEW"])]],
+        ignore_index=True,
+    )
 
-csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
-xlsx_buf = io.BytesIO()
-try:
-    export_df.to_excel(xlsx_buf, index=False, engine="openpyxl",
-                       sheet_name="Candidates")
-    xlsx_bytes = xlsx_buf.getvalue()
-    xlsx_ok = True
-except Exception as exc:                      # noqa: BLE001
-    xlsx_bytes, xlsx_ok = b"", False
-    st.warning(f"Excel export unavailable: {_short(exc)}")
+    csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
+    xlsx_buf = io.BytesIO()
+    try:
+        export_df.to_excel(xlsx_buf, index=False, engine="openpyxl",
+                           sheet_name="Candidates")
+        xlsx_bytes = xlsx_buf.getvalue()
+        xlsx_ok = True
+    except Exception as exc:                      # noqa: BLE001
+        xlsx_bytes, xlsx_ok = b"", False
+        st.warning(f"Excel export unavailable: {_short(exc)}")
 
-d1, d2, d3 = st.columns([1, 1, 2])
-d1.download_button(
-    "Download CSV", data=csv_bytes, file_name="ranked_candidates_report.csv",
-    mime="text/csv", disabled=not len(export_df),
-)
-d2.download_button(
-    "Download Excel", data=xlsx_bytes, file_name="ranked_candidates_report.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    disabled=not xlsx_ok,
-)
-d3.caption(
-    f"{len(export_df)} rows — every scored candidate first (rank, score, bonus, "
-    "strengths, weaknesses, recruiter remark), then everything that was excluded "
-    "or could not be read, so the audit trail is complete."
-)
+    d1, d2, d3 = st.columns([1, 1, 2])
+    d1.download_button(
+        "Download CSV", data=csv_bytes, file_name="ranked_candidates_report.csv",
+        mime="text/csv", disabled=not len(export_df),
+    )
+    d2.download_button(
+        "Download Excel", data=xlsx_bytes, file_name="ranked_candidates_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        disabled=not xlsx_ok,
+    )
+    d3.caption(
+        f"{len(export_df)} rows — every scored candidate first (rank, score, bonus, "
+        "strengths, weaknesses, recruiter remark), then everything that was excluded "
+        "or could not be read, so the audit trail is complete."
+    )
 
 st.divider()
 
