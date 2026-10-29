@@ -863,7 +863,117 @@ with st.sidebar:
 # SECTION 5 -- MAIN AREA: upload, screen, present
 # ══════════════════════════════════════════════════════════════════════════
 
-st.title("Screen candidate CVs")
+import streamlit.components.v1 as components
+
+# TechText interactive canvas banner from React Bits
+components.html("""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    margin: 0;
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #tech-container {
+    width: 100%;
+    height: 100px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    backdrop-filter: blur(8px);
+    cursor: pointer;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+<div id="tech-container" title="Interactive Dashboard Header — Drag, Hover, or Click!">
+  <canvas id="canvas"></canvas>
+</div>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const container = document.getElementById('tech-container');
+
+let width = container.clientWidth;
+let height = container.clientHeight;
+let dpr = window.devicePixelRatio || 1;
+
+canvas.width = width * dpr;
+canvas.height = height * dpr;
+
+const text = "CV ↔ JD MATCHER";
+let fontSize = Math.min(42, Math.floor(width / 15));
+let pointer = { x: width / 2, y: height / 2, inside: false };
+
+window.addEventListener('resize', () => {
+  width = container.clientWidth;
+  height = container.clientHeight;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  fontSize = Math.min(42, Math.floor(width / 15));
+});
+
+container.addEventListener('pointermove', e => {
+  const rect = container.getBoundingClientRect();
+  pointer.x = e.clientX - rect.left;
+  pointer.y = e.clientY - rect.top;
+  pointer.inside = true;
+});
+
+container.addEventListener('pointerleave', () => {
+  pointer.inside = false;
+});
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Draw background text in Executive Gray/Blue
+  ctx.fillStyle = '#1e293b';
+  ctx.fillText(text, width / 2, height / 2);
+
+  // If pointer inside, draw interactive reveal effect (Executive Blue accents)
+  if (pointer.inside) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(pointer.x, pointer.y, 100, 0, Math.PI * 2);
+    ctx.clip();
+
+    ctx.fillStyle = '#2563eb';
+    ctx.fillText(text, width / 2, height / 2);
+
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 2]);
+    ctx.strokeText(text, width / 2, height / 2);
+    ctx.restore();
+  }
+
+  requestAnimationFrame(draw);
+}
+
+draw();
+</script>
+</body>
+</html>
+""", height=110)
+
 st.caption(
     f"PDF or DOCX · up to {MAX_FILE_MB} MB each · {MAX_FILES} files and "
     f"{MAX_TOTAL_MB} MB per batch. Nothing is stored: files are read in memory "
