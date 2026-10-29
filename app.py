@@ -61,6 +61,102 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ═════════════════════════════════════════════════════════════════════════
+# SECTION 0 -- CUSTOM CSS INJECTOR  (Apple‑style glassmorphic polish)
+# ═════════════════════════════════════════════════════════════════════════
+# Inject a clean stylesheet so the app renders with frosted‑glass cards, subtle
+# 1 px border highlights, modern typography and slate / executive‑blue accents.
+# This block runs after `st.set_page_config()` and does not affect any layout
+# components because it only adds a `<style>` tag into the Streamlit header.
+_CSS = """
+<style>
+/* ── Frosted‑glass card containers ────────────────────────────────────── */
+.stMarkdown, .stExpander, .stInfo, .stSuccess, .stWarning, .stError {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(8px);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin-bottom: 0.8rem;
+}
+
+/* ── Header and main title tweaks ────────────────────────────────────── */
+.main-title {
+    color: #0f0f23;  /* executive navy */
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 0.2rem;
+}
+
+/* ── Metric cards ────────────────────────────────────────────────────── */
+.stMetric > label {
+    color: #6b7280;   /* slate gray */
+    font-size: 0.875rem;
+    margin-bottom: 0.25rem;
+}
+
+.stMetric > div > div {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(8px);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+}
+
+/* ── Frosted glass for sidebar ───────────────────────────────────────── */
+section[data-testid="stSidebar"] .css-1d3kgpb {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(8px);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+}
+
+/* ── Tab lists ───────────────────────────────────────────────────────── */
+.stTabs > button {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #6b7280;
+    border-radius: 6px 6px 0 0;
+    margin-right: 2px;
+    font-weight: 500;
+}
+
+.stTabs > button[data-baseweb="tab"][aria-selected="true"] {
+    background: rgba(255, 255, 255, 0.08);
+    color: #0f0f23;
+    border-bottom: 2px solid #2563eb;  /* executive blue accent */
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+.stButton > button {
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.06);
+    color: #0f0f23;
+    font-weight: 500;
+}
+
+.stButton > button:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Table and dataframe ──────────────────────────────────────────────── */
+.dataframe {
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+/* ── Accordion / expander ─────────────────────────────────────────────── */
+.stExpander > summary {
+    color: #0f0f23;
+    font-weight: 500;
+    cursor: pointer;
+}
+</style>
+"""
+
 try:  # the engine must not be able to take the whole app down
     # Make sure the engine is importable no matter how this file was started
     # (`streamlit run app.py`, a symlinked script, a test harness, ...).
@@ -692,7 +788,7 @@ with st.sidebar:
     st.caption("Upload custom blacklist (.csv / .xlsx / .xls)")
     bl_upload = st.file_uploader(
         "Choose blacklist file",
-        type=["csv", "xlsx", "xls"],
+        type=["csv", "xlsx"],
         help="Names and phone numbers in this file will be added to the blacklist.",
         key="custom_blacklist_uploader",
     )
@@ -705,8 +801,8 @@ with st.sidebar:
         import pandas as pd
         if ext == ".csv":
             df = pd.read_csv(bl_upload)
-        else:  # .xlsx or .xls
-            df = pd.read_excel(bl_upload, engine="openpyxl" if ext == ".xlsx" else "openpyxl")
+        else:  # .xlsx
+            df = pd.read_excel(bl_upload, engine="openpyxl")
         # Assume columns: Name, Phone (or just Name)
         custom_entries = []
         for _, row in df.iterrows():
@@ -934,10 +1030,13 @@ for i, r in enumerate(scored, 1):
     if status in ("RANKED", "REVIEW"):
         # Find the original uploaded file by name
         cv_name = r["Candidate_File_Name"]
-        # Sanitize the filename
+        # Determine original extension
+        orig_ext = os.path.splitext(cv_name)[1].lower() or ".pdf"
+        if orig_ext not in ALLOWED_EXTS:
+            orig_ext = ".pdf"
         clean_name = re.sub(r"[^\w\s\-]", "", cv_name.replace(".pdf", "").replace(".docx", ""))
         clean_name = re.sub(r"\s+", "_", clean_name).strip("_")
-        new_filename = f"Rank_{i}_Score_{int(r['Match_Score']):02d}_{clean_name}.pdf"
+        new_filename = f"Rank_{i}_Score_{int(r['Match_Score']):02d}_{clean_name}{orig_ext}"
         dest_path = topcv_dir / new_filename
         # Save the CV file - read uploaded bytes and write to destination
         # Match by candidate name to the original upload
@@ -946,7 +1045,7 @@ for i, r in enumerate(scored, 1):
                 try:
                     import shutil
                     # Write bytes directly instead of shutil.copy2 with UploadedFile
-                    dest_path.write_bytes(up.read())
+                    dest_path.write_bytes(up.data)
                 except Exception:
                     pass
                 break
@@ -1087,6 +1186,84 @@ d3.caption(
 )
 
 st.divider()
+
+# ═════════════════════════════════════════════════════════════════════════
+# SECTION 7 — FAQ & HR WISDOM BANNERS
+# ═════════════════════════════════════════════════════════════════════════
+
+st.markdown("""
+## Frequently Asked Questions
+
+<details>
+<summary>How are candidates scored?</summary>
+The score combines multiple buckets: skills match, years of experience, 
+education level, credentials, focus keywords, role alignment, industry relevance,
+and language proficiency. Each bucket has a weight configured from the job 
+description, and custom recruiter instructions can adjust those weights (Step 4).
+</details>
+
+<details>
+<summary>What if a candidate is marked REVIEW (blacklisted name only)?</summary>
+A name-only blacklist match means the candidate's name appeared in the blacklist 
+but no phone number matched. This is a flag for manual review - a name alone is 
+not sufficient evidence to exclude. Confirm the candidate's identity and 
+credentials before making a decision.
+</details>
+
+<details>
+<summary>Can I upload a password-protected PDF?</summary>
+No. Password-protected PDFs are rejected during upload so the engine cannot 
+read their content. Request an unlocked copy from the candidate.
+</details>
+""", unsafe_allow_html=True)
+
+<details>
+<summary>💡 Which file formats are supported?</summary>
+PDF (any text-based PDF) and DOCX (Microsoft Word 2007+) are supported. 
+Scanned image-only PDFs will be flagged as “almost no text extracted” and 
+require manual review.
+</details>
+
+### HR Wisdom Banners
+
+<div class="wisdom-banner">
+  <strong>⚠️ Important:</strong> Always verify a candidate’s claimed experience 
+  against documented tenure in their CV. Automated scoring may miss nuanced 
+gaps between stated years and actual project involvement.
+</div>
+
+<div class="wisdom-banner">
+  <strong>📋 Pro tip:</strong> Use the education-level filter strategically. 
+  Requiring a specific degree can dramatically shrink your pool — consider 
+  whether the role truly needs that level, or if relevant experience outweighs 
+  formal credentials.
+</div>
+
+<div class="wisdom-banner">
+  <strong>🔍 Pro tip:</strong> Bonus criteria are additive — they boost a score 
+  that already meets the core JD requirements. If a candidate scores below 45,
+  bonus points won’t pull them above the BORDERLINE threshold.
+</div>
+
+<style>
+  .wisdom-banner {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(8px);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    margin: 0.5rem 0;
+    font-size: 0.875rem;
+    color: #cbd5e1;
+  }
+  .wisdom-banner strong {
+    color: #0f0f23;
+    font-weight: 500;
+  }
+</style>
+
+st.divider()
+
 st.caption(
     "Scoring is done by `evaluator.py` — the same engine as the command line, "
     "so the web and CLI results are identical. See SECURITY.md for the threat "
