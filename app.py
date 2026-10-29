@@ -682,13 +682,22 @@ with st.sidebar:
     )
 
     profile = build_profile(jd_text or "")
+    is_preview_mode = False
 
     if profile is None:
-        st.warning("Paste a job description to continue.")
-        st.stop()
+        from types import SimpleNamespace
+        profile = SimpleNamespace(
+            title="Recruitment Specialist (Sample)",
+            min_experience_years=3.0,
+            max_experience_years=8.0,
+            education_levels=["bachelor"],
+            hard_skills=["Sourcing", "Screening", "ATS"]
+        )
+        is_preview_mode = True
+        st.info("💡 Paste a Job Description to generate a custom scoring profile. Currently showing illustrative filters below.")
 
     st.caption(
-        f"**From the JD:** {profile.title or 'untitled'} · "
+        f"**JD Profile:** {profile.title or 'untitled'} · "
         f"{profile.min_experience_years:g}–{profile.max_experience_years:g} yrs · "
         f"{', '.join(profile.education_levels) or 'no level stated'} · "
         f"{len(profile.hard_skills)} skills"
@@ -1073,18 +1082,19 @@ if rejected:
         for msg in rejected:
             st.markdown(f"- {msg}")
 
-rows = st.session_state.get("results")
-if not rows:
-    st.info("Upload CVs and press **Run screening** to build the shortlist.")
-    st.stop()
-
+rows = st.session_state.get("results") or []
 meta = st.session_state.get("meta", {})
 ranked = [r for r in rows if r["Status"] in ("RANKED", "REVIEW")]
 rest = [r for r in rows if r["Status"] not in ("RANKED", "REVIEW")]
 
 st.divider()
-sub = f"{meta.get('title', '')} — experience {meta.get('experience', '?')} yrs"
-st.subheader(f"Ranked shortlist · {sub}")
+sub_title = meta.get('title', profile.title or 'Job Description')
+sub_exp = meta.get('experience', f"{exp_min:g}–{exp_max:g}")
+sub = f"{sub_title} · experience {sub_exp} yrs"
+st.subheader(f"Executive Candidate Shortlist — {sub}")
+
+if not rows:
+    st.info("💡 **Dashboard Ready**: Upload candidate CVs in the section above and click **🚀 Run screening** to calculate live candidate scores, detailed scorecards, and audit trails.")
 
 scores = [r["Match_Score"] for r in ranked]
 m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -1092,16 +1102,17 @@ m1.metric("Evaluated", meta.get("n", len(rows)))
 m2.metric("Ranked", len(ranked))
 m3.metric("Excluded", meta.get("excluded", 0))
 m4.metric("Unreadable", meta.get("errors", 0))
-m5.metric("Avg score", f"{sum(scores) / len(scores):.1f}" if scores else "—")
-m6.metric("≥ 70 points", sum(1 for s in scores if s >= 70))
+m5.metric("Avg Score", f"{sum(scores) / len(scores):.1f}" if scores else "—")
+m6.metric("≥ 70 Points", sum(1 for s in scores if s >= 70))
+
 if meta.get("flagged"):
     st.warning(
         f"{meta['flagged']} candidate(s) matched a blacklisted **name** only and "
         "are marked REVIEW — a name alone is not proof. Confirm manually."
     )
 
-if not ranked:
-    st.warning("No candidate passed the filters. Loosen the keyword or education filters.")
+if rows and not ranked:
+    st.warning("No candidate passed the active filters. Loosen the keyword or education filters in the sidebar.")
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Ranked Table",
@@ -1115,8 +1126,10 @@ with tab1:
     if ranked:
         table = export_frame(ranked)
         st.dataframe(table, hide_index=True, use_container_width=True)
+    elif rows:
+        st.info("No candidates passed the screening criteria.")
     else:
-        st.info("No candidates ranked yet.")
+        st.info("📊 **Ranked Table Preview**: Upload CVs and run screening to populate the ranked candidate shortlist here.")
 
 # ── Tab 2: Scorecards ─────────────────────────────────────────────────────
 with tab2:
@@ -1146,8 +1159,10 @@ with tab2:
 
                 with st.expander("Full engine reasoning"):
                     st.caption(r["Summary_Reasoning"])
+    elif rows:
+        st.info("No candidate scorecards match the minimum score and top N criteria.")
     else:
-        st.info("No scorecards meet the selection criteria.")
+        st.info("📋 **Scorecards Preview**: Detailed candidate strengths, weaknesses, and structured recruiter summary remarks will appear here after screening.")
 
 # ── Tab 3: Excluded / unreadable ──────────────────────────────────────────
 with tab3:
@@ -1156,44 +1171,47 @@ with tab3:
             st.markdown(f"**{r['Candidate_File_Name']}** — `{r['Status']}`")
             st.caption(r["Recruiter_Remark"])
             st.divider()
-    else:
+    elif rows:
         st.success("No candidates were excluded from this batch.")
+    else:
+        st.info("🚫 **Audit Trail Preview**: Any blacklisted or auto-excluded CVs will be audited here.")
 
 # ── Tab 4: Export ─────────────────────────────────────────────────────────
 with tab4:
-    export_df = export_frame(rows)          # ranked first, then excluded/errors
-    export_df = pd.concat(
-        [export_df[export_df["Status"].isin(["RANKED", "REVIEW"])],
-         export_df[~export_df["Status"].isin(["RANKED", "REVIEW"])]],
-        ignore_index=True,
-    )
+    if rows:
+        export_df = export_frame(rows)          # ranked first, then excluded/errors
+        export_df = pd.concat(
+            [export_df[export_df["Status"].isin(["RANKED", "REVIEW"])],
+             export_df[~export_df["Status"].isin(["RANKED", "REVIEW"])]],
+            ignore_index=True,
+        )
 
-    csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
-    xlsx_buf = io.BytesIO()
-    try:
-        export_df.to_excel(xlsx_buf, index=False, engine="openpyxl",
-                           sheet_name="Candidates")
-        xlsx_bytes = xlsx_buf.getvalue()
-        xlsx_ok = True
-    except Exception as exc:                      # noqa: BLE001
-        xlsx_bytes, xlsx_ok = b"", False
-        st.warning(f"Excel export unavailable: {_short(exc)}")
+        csv_bytes = export_df.to_csv(index=False).encode("utf-8-sig")
+        xlsx_buf = io.BytesIO()
+        try:
+            export_df.to_excel(xlsx_buf, index=False, engine="openpyxl",
+                               sheet_name="Candidates")
+            xlsx_bytes = xlsx_buf.getvalue()
+            xlsx_ok = True
+        except Exception as exc:                      # noqa: BLE001
+            xlsx_bytes, xlsx_ok = b"", False
+            st.warning(f"Excel export unavailable: {_short(exc)}")
 
-    d1, d2, d3 = st.columns([1, 1, 2])
-    d1.download_button(
-        "Download CSV", data=csv_bytes, file_name="ranked_candidates_report.csv",
-        mime="text/csv", disabled=not len(export_df),
-    )
-    d2.download_button(
-        "Download Excel", data=xlsx_bytes, file_name="ranked_candidates_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        disabled=not xlsx_ok,
-    )
-    d3.caption(
-        f"{len(export_df)} rows — every scored candidate first (rank, score, bonus, "
-        "strengths, weaknesses, recruiter remark), then everything that was excluded "
-        "or could not be read, so the audit trail is complete."
-    )
+        d1, d2, d3 = st.columns([1, 1, 2])
+        d1.download_button(
+            "Download CSV Report", data=csv_bytes, file_name="ranked_candidates_report.csv",
+            mime="text/csv", disabled=not len(export_df),
+        )
+        d2.download_button(
+            "Download Excel Report", data=xlsx_bytes, file_name="ranked_candidates_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            disabled=not xlsx_ok,
+        )
+        d3.caption(
+            f"{len(export_df)} rows — every scored candidate first, followed by audit trail exclusions."
+        )
+    else:
+        st.info("📥 **Export Preview**: CSV and Excel download reports will be generated upon running the candidate screening.")
 
 st.divider()
 
