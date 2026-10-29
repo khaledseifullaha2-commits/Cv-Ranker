@@ -1217,32 +1217,33 @@ read their content. Request an unlocked copy from the candidate.
 </details>
 """, unsafe_allow_html=True)
 
+st.markdown("""
 <details>
-<summary>💡 Which file formats are supported?</summary>
+<summary>Which file formats are supported?</summary>
 PDF (any text-based PDF) and DOCX (Microsoft Word 2007+) are supported. 
-Scanned image-only PDFs will be flagged as “almost no text extracted” and 
+Scanned image-only PDFs will be flagged as "almost no text extracted" and 
 require manual review.
 </details>
 
 ### HR Wisdom Banners
 
 <div class="wisdom-banner">
-  <strong>⚠️ Important:</strong> Always verify a candidate’s claimed experience 
+  <strong>Important:</strong> Always verify a candidate's claimed experience 
   against documented tenure in their CV. Automated scoring may miss nuanced 
-gaps between stated years and actual project involvement.
+  gaps between stated years and actual project involvement.
 </div>
 
 <div class="wisdom-banner">
-  <strong>📋 Pro tip:</strong> Use the education-level filter strategically. 
-  Requiring a specific degree can dramatically shrink your pool — consider 
+  <strong>Pro tip:</strong> Use the education-level filter strategically. 
+  Requiring a specific degree can dramatically shrink your pool - consider 
   whether the role truly needs that level, or if relevant experience outweighs 
   formal credentials.
 </div>
 
 <div class="wisdom-banner">
-  <strong>🔍 Pro tip:</strong> Bonus criteria are additive — they boost a score 
+  <strong>Pro tip:</strong> Bonus criteria are additive - they boost a score 
   that already meets the core JD requirements. If a candidate scores below 45,
-  bonus points won’t pull them above the BORDERLINE threshold.
+  bonus points won't pull them above the BORDERLINE threshold.
 </div>
 
 <style>
@@ -1261,11 +1262,12 @@ gaps between stated years and actual project involvement.
     font-weight: 500;
   }
 </style>
+""", unsafe_allow_html=True)
 
 st.divider()
 
 st.caption(
-    "Scoring is done by `evaluator.py` — the same engine as the command line, "
+    "Scoring is done by `evaluator.py` - the same engine as the command line, "
     "so the web and CLI results are identical. See SECURITY.md for the threat "
     "model."
 )
