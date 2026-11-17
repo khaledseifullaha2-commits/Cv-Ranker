@@ -456,14 +456,43 @@ except Exception:
     GEMINI_API_KEY = ""
 GEMINI_API_KEY = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
 
+GEMINI_MODEL = ""
+try:
+    GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "") or ""
+except Exception:
+    GEMINI_MODEL = ""
+GEMINI_MODEL = GEMINI_MODEL or os.environ.get("GEMINI_MODEL", "")
+
+# Google shut down gemini-1.5-pro on 29 Sep 2025 and the 2.0 family on
+# 1 Jun 2026, so a retired name now returns 404. The app walks the list below
+# and settles on the first model this key can actually call. Pin one with
+# GEMINI_MODEL (secrets.toml or environment) — it is always tried first.
+_models: List[str] = []
+if GEMINI_MODEL:
+    _models.append(GEMINI_MODEL)
+_models += [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-1.5-pro",
+]
+GEMINI_MODEL_CANDIDATES: Tuple[str, ...] = tuple(dict.fromkeys(_models))
+
 gemini_model = None
+_genai_module = None
+_gemini_active_name = ""
+_gemini_active_model = None
+
 if GEMINI_API_KEY:
     try:
         import google.generativeai as genai
 
         genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel("gemini-1.5-pro")
+        _genai_module = genai
+        gemini_model = genai.GenerativeModel(GEMINI_MODEL_CANDIDATES[0])
     except Exception as _gemini_exc:                       # pragma: no cover
+        gemini_model = None
         st.warning(
             "⚠️ Google Gemini could not be initialised — the local engine "
             f"carries the whole score. Details: `{_short(_gemini_exc)}`"
@@ -474,6 +503,55 @@ else:
         "`.streamlit/secrets.toml` (or the environment) to enable the 40% AI "
         "score; the local engine still runs."
     )
+
+
+def _is_model_unavailable(exc: BaseException) -> bool:
+    """True when the failure means "this model name is not served"."""
+    message = str(exc).lower()
+    return any(marker in message for marker in (
+        "not found", "not supported", "does not exist", "unsupported",
+        "no longer available", "invalid model", "404",
+    ))
+
+
+def _gemini_generate(prompt: str):
+    """Generate content, rolling forward through models Google still serves.
+
+    A quota, auth or network error is raised immediately — only a retired or
+    unknown model name moves on to the next candidate. The model that worked
+    is remembered, so the walk costs at most one round trip per session.
+    """
+    global _gemini_active_name, _gemini_active_model
+
+    if _gemini_active_model is not None:
+        return _gemini_active_model.generate_content(prompt)
+
+    last_exc: Optional[BaseException] = None
+    for name in GEMINI_MODEL_CANDIDATES:
+        try:
+            candidate = _genai_module.GenerativeModel(name)
+            reply = candidate.generate_content(prompt)
+        except Exception as exc:                          # pragma: no cover
+            last_exc = exc
+            if not _is_model_unavailable(exc):
+                raise
+            continue
+        _gemini_active_name = name
+        _gemini_active_model = candidate
+        if name != GEMINI_MODEL_CANDIDATES[0]:
+            st.info(
+                f"ℹ️ Using Gemini model `{name}` — `{GEMINI_MODEL_CANDIDATES[0]}` "
+                "is not available to this API key."
+            )
+        return reply
+
+    raise last_exc if last_exc else RuntimeError("no Gemini model is available")
+
+
+def gemini_model_name() -> str:
+    """The model actually answering, for the UI."""
+    return _gemini_active_name or GEMINI_MODEL_CANDIDATES[0]
+
 
 GEMINI_UNAVAILABLE = {
     "candidate_name": "",
@@ -560,7 +638,7 @@ CANDIDATE CV (redacted):
 """
 
     try:
-        reply = gemini_model.generate_content(prompt)
+        reply = _gemini_generate(prompt)
         data = _parse_json_reply(getattr(reply, "text", "") or "")
     except Exception as exc:                              # pragma: no cover
         st.warning(
@@ -1448,6 +1526,8 @@ if run:
             )
         if gemini_model is None:
             st.caption("ℹ️ Gemini unavailable — this run was scored by the local engine alone.")
+        else:
+            st.caption(f"🤖 AI score by `{gemini_model_name()}` (40% of the final score).")
 
         # Rank the scored rows (excluded / unreadable rows keep a blank rank).
         scored = [r for r in rows if r["Status"] in ("RANKED", "REVIEW")]
@@ -1499,6 +1579,7 @@ if run:
             "experience": f"{lo:g}–{hi:g}",
             "redactions": redactions,
             "ai_enabled": gemini_model is not None,
+            "model": gemini_model_name(),
         }
 
 
