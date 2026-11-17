@@ -70,89 +70,108 @@ st.set_page_config(
 # components because it only adds a `<style>` tag into the Streamlit header.
 _CSS = """
 <style>
-/* ── Frosted‑glass card containers ────────────────────────────────────── */
-.stMarkdown, .stExpander, .stInfo, .stSuccess, .stWarning, .stError {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(8px);
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    margin-bottom: 0.8rem;
+/* ── Deep Slate / Obsidian Futuristic Theme ──────────────────────────── */
+.stApp {
+    background-color: #0b0f19;
+    color: #f3f4f6;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* ── Header and main title tweaks ────────────────────────────────────── */
-.main-title {
-    color: #0f0f23;  /* executive navy */
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    margin-bottom: 0.2rem;
+/* ── Glowing Glassmorphic Cards & Containers ──────────────────────────── */
+.stMarkdown, .stExpander, .stInfo, .stSuccess, .stWarning, .stError, div[data-testid="stVerticalBlock"] > div[style*="background"] {
+    background: rgba(17, 24, 39, 0.75) !important;
+    border: 1px solid rgba(59, 130, 246, 0.18) !important;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: 12px;
+    padding: 1.2rem 1.5rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
 }
 
-/* ── Metric cards ────────────────────────────────────────────────────── */
-.stMetric > label {
-    color: #6b7280;   /* slate gray */
-    font-size: 0.875rem;
-    margin-bottom: 0.25rem;
-}
-
-.stMetric > div > div {
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    backdrop-filter: blur(8px);
-    border-radius: 8px;
-    padding: 0.8rem 1rem;
-}
-
-/* ── Frosted glass for sidebar ───────────────────────────────────────── */
-section[data-testid="stSidebar"] .css-1d3kgpb {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(8px);
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-}
-
-/* ── Tab lists ───────────────────────────────────────────────────────── */
-.stTabs > button {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    color: #6b7280;
-    border-radius: 6px 6px 0 0;
-    margin-right: 2px;
-    font-weight: 500;
-}
-
-.stTabs > button[data-baseweb="tab"][aria-selected="true"] {
-    background: rgba(255, 255, 255, 0.08);
-    color: #0f0f23;
-    border-bottom: 2px solid #2563eb;  /* executive blue accent */
-}
-
-/* ── Buttons ──────────────────────────────────────────────────────────── */
+/* ── Crisp Accent Borders & Glowing Hovers ───────────────────────────── */
 .stButton > button {
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.06);
-    color: #0f0f23;
-    font-weight: 500;
+    border-radius: 8px;
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.2), rgba(15, 23, 42, 0.8));
+    color: #ffffff;
+    font-weight: 600;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
 }
 
 .stButton > button:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.15);
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.4), rgba(30, 58, 138, 0.9));
+    border-color: rgba(96, 165, 250, 0.8);
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
+    transform: translateY(-1px);
 }
 
-/* ── Table and dataframe ──────────────────────────────────────────────── */
-.dataframe {
+/* ── Executive Typography & Headers ──────────────────────────────────── */
+h1, h2, h3, .main-title {
+    color: #ffffff !important;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+}
+
+p, span, label, .stMetric > label {
+    color: #9ca3af !important;
+}
+
+/* ── Metric Cards ────────────────────────────────────────────────────── */
+.stMetric {
+    background: rgba(17, 24, 39, 0.8);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: 12px;
+    padding: 1rem;
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+}
+
+.stMetric > div > div > div {
+    color: #60a5fa !important;
+    font-weight: 700;
+}
+
+/* ── Sidebar Styling ─────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] {
+    background-color: #070a13;
+    border-right: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+section[data-testid="stSidebar"] .stMarkdown {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* ── Futuristic Tabs ─────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    background-color: rgba(15, 23, 42, 0.6);
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+.stTabs [data-baseweb="tab"] {
+    background: transparent;
     border-radius: 6px;
-    overflow: hidden;
+    color: #9ca3af;
+    font-weight: 600;
+    padding: 8px 16px;
+    border: none !important;
 }
 
-/* ── Accordion / expander ─────────────────────────────────────────────── */
-.stExpander > summary {
-    color: #0f0f23;
-    font-weight: 500;
-    cursor: pointer;
+.stTabs [aria-selected="true"] {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+}
+
+/* ── Dataframes & Tables ─────────────────────────────────────────────── */
+dataframe, table {
+    background-color: rgba(17, 24, 39, 0.9) !important;
+    border-radius: 8px;
 }
 </style>
 """
