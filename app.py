@@ -41,6 +41,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import io
+import json
 import os
 import re
 import sys
@@ -349,11 +350,258 @@ def validate_uploads(files: Sequence) -> Tuple[List[Upload], List[str]]:
     return uploads, errors
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# SECTION 1.5 -- PRIVACY LAYER + GOOGLE GEMINI (40% qualitative score)
+# ═════════════════════════════════════════════════════════════════════════
+# Contact details are pulled out of the raw CV locally and kept in the
+# recruiter report only. Only REDACTED text is ever sent to Gemini; the raw
+# text still goes to the local evaluator.py engine that supplies 60%.
+
+_RE_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_RE_PHONE = re.compile(
+    r"(?:(?:\+|00)\d{1,3}[\s.\-]?)?"
+    r"(?:\(?\d{2,5}\)?[\s.\-]?)"
+    r"\d{3,5}[\s.\-]?\d{3,6}"
+)
+_RE_ADDRESS = re.compile(
+    r"(?:present\s+address|permanent\s+address|address|house|village|"
+    r"post\s+office|thana|district|street|road)\s*[:\-]?\s*[^\n]{5,120}",
+    re.IGNORECASE,
+)
+
+
+def _digit_count(value: str) -> int:
+    return len(re.sub(r"\D", "", value or ""))
+
+
+def redact_pii(text: str) -> Tuple[str, Dict[str, int]]:
+    """Redact emails, phone numbers and postal addresses before any API call.
+
+    Returns the redacted text plus per-category counts so the UI can show
+    exactly what was removed. Year ranges such as ``2019 - 2023`` survive
+    because only numbers with 8+ digits are treated as phone numbers.
+    """
+    if not text:
+        return "", {"emails": 0, "phones": 0, "addresses": 0}
+
+    emails = _RE_EMAIL.findall(text)
+    redacted = _RE_EMAIL.sub("[REDACTED_EMAIL]", text)
+
+    phones = [m.group(0) for m in _RE_PHONE.finditer(redacted)]
+    phones = [p for p in phones if _digit_count(p) >= 8]
+    redacted = _RE_PHONE.sub(
+        lambda m: "[REDACTED_PHONE]" if _digit_count(m.group(0)) >= 8 else m.group(0),
+        redacted,
+    )
+
+    addresses = _RE_ADDRESS.findall(redacted)
+    redacted = _RE_ADDRESS.sub("[REDACTED_ADDRESS]", redacted)
+
+    return redacted, {
+        "emails": len(emails),
+        "phones": len(phones),
+        "addresses": len(addresses),
+    }
+
+
+def extract_contact_fields(raw_text: str, fallback_name: str = "") -> Dict[str, str]:
+    """Pull Name / Email / Phone out of the RAW text, locally.
+
+    These values never leave the machine: Gemini receives the redacted text,
+    so the report can show real contact details without exposing them to the
+    API.
+    """
+    raw_text = raw_text or ""
+
+    email = ""
+    match = _RE_EMAIL.search(raw_text)
+    if match:
+        email = match.group(0)
+
+    phone = ""
+    for candidate in _RE_PHONE.finditer(raw_text):
+        digits = _digit_count(candidate.group(0))
+        if 8 <= digits <= 15:
+            phone = candidate.group(0).strip()
+            break
+
+    name = ""
+    for line in raw_text.splitlines():
+        value = line.strip(" \t|,;:")
+        if not 2 <= len(value) <= 60 or re.search(r"\d", value):
+            continue
+        lowered = value.lower()
+        if any(token in lowered for token in (
+            "@", "http", "curriculum", "resume", "cv", "phone", "email",
+            "mobile", "experience", "education", "profile", "summary",
+        )):
+            continue
+        words = value.split()
+        if 1 <= len(words) <= 5 and value[0].isupper():
+            name = value
+            break
+
+    stem = os.path.splitext(os.path.basename(fallback_name or ""))[0]
+    return {
+        "name": name or stem or "Unknown candidate",
+        "email": email,
+        "phone": phone,
+    }
+
+
+GEMINI_API_KEY = ""
+try:
+    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "") or ""
+except Exception:
+    GEMINI_API_KEY = ""
+GEMINI_API_KEY = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
+
+gemini_model = None
+if GEMINI_API_KEY:
+    try:
+        import google.generativeai as genai
+
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel("gemini-1.5-pro")
+    except Exception as _gemini_exc:                       # pragma: no cover
+        st.warning(
+            "⚠️ Google Gemini could not be initialised — the local engine "
+            f"carries the whole score. Details: `{_short(_gemini_exc)}`"
+        )
+else:
+    st.warning(
+        "⚠️ Google Gemini API key not configured. Add `GEMINI_API_KEY` to "
+        "`.streamlit/secrets.toml` (or the environment) to enable the 40% AI "
+        "score; the local engine still runs."
+    )
+
+GEMINI_UNAVAILABLE = {
+    "candidate_name": "",
+    "email": "",
+    "phone": "",
+    "years_experience": 0.0,
+    "skills_summary": "",
+    "match_score": 0.0,
+    "strengths": [],
+    "gaps": [],
+    "core_skills": [],
+}
+
+
+def _parse_json_reply(reply: str) -> Dict:
+    """Parse a JSON object out of a model reply, tolerating ```json fences."""
+    body = (reply or "").strip()
+    if "```" in body:
+        body = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", body, flags=re.MULTILINE).strip()
+    start, end = body.find("{"), body.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        data = json.loads(body[start:end + 1])
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _as_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_list(value) -> List[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [v.strip() for v in re.split(r"[;\n]+", value) if v.strip()]
+    return []
+
+
+@st.cache_data(show_spinner=False)
+def gemini_screen(redacted_cv_text: str, jd_text: str) -> Dict:
+    """Gemini 1.5 Pro screening on REDACTED text, cached per CV + JD pair.
+
+    Returns the structured candidate fields plus the qualitative score that
+    forms 40% of the hybrid score. Re-running the same PDF against the same
+    job description hits this cache and issues no API request at all.
+    """
+    if gemini_model is None:
+        return dict(GEMINI_UNAVAILABLE)
+
+    prompt = f"""You are an expert recruitment analyst. Read the candidate CV and the job description, then reply with ONE JSON object and nothing else.
+
+The CV text has already been privacy-redacted: emails appear as [REDACTED_EMAIL], phone numbers as [REDACTED_PHONE] and postal addresses as [REDACTED_ADDRESS]. Return empty strings for email and phone and never try to guess them.
+
+Return exactly these keys:
+{{
+  "candidate_name": "the candidate's full name, empty if not visible",
+  "email": "empty string - redacted before sending",
+  "phone": "empty string - redacted before sending",
+  "years_experience": 0.0,
+  "skills_summary": "one or two sentences naming the core skills, max 40 words",
+  "match_score": 0,
+  "strengths": ["3-5 short strengths relevant to this job"],
+  "gaps": ["3-5 short gaps against this job"],
+  "core_skills": ["5-8 core skill names"]
+}}
+
+Scoring rules for match_score (integer 0-100, be strict):
+- required skills evidenced in the CV: 40% of the score
+- years of experience versus what the job description asks: 30%
+- education and certifications the job description requires: 30%
+Only count requirements that actually appear in the job description.
+
+JOB DESCRIPTION:
+{jd_text}
+
+CANDIDATE CV (redacted):
+{redacted_cv_text}
+"""
+
+    try:
+        reply = gemini_model.generate_content(prompt)
+        data = _parse_json_reply(getattr(reply, "text", "") or "")
+    except Exception as exc:                              # pragma: no cover
+        st.warning(
+            "Gemini request failed — this candidate is scored by the local "
+            f"engine only. ({_short(exc, 120)})"
+        )
+        return dict(GEMINI_UNAVAILABLE)
+
+    if not data:
+        st.warning("Gemini returned an unreadable reply — local engine only for this CV.")
+        return dict(GEMINI_UNAVAILABLE)
+
+    return {
+        "candidate_name": str(data.get("candidate_name") or "").strip(),
+        "email": str(data.get("email") or "").strip(),
+        "phone": str(data.get("phone") or "").strip(),
+        "years_experience": max(0.0, _as_float(data.get("years_experience"), 0.0)),
+        "skills_summary": str(data.get("skills_summary") or "").strip(),
+        "match_score": max(0.0, min(100.0, _as_float(data.get("match_score"), 0.0))),
+        "strengths": _as_list(data.get("strengths")),
+        "gaps": _as_list(data.get("gaps")),
+        "core_skills": _as_list(data.get("core_skills")),
+    }
+
+
+def hybrid_score(engine_score: float, ai_score: float, bonus: float = 0.0) -> float:
+    """60% local engine + 40% Gemini qualitative score, plus bonus, capped at 100."""
+    if gemini_model is None:
+        combined = engine_score + bonus
+    else:
+        combined = 0.6 * engine_score + 0.4 * ai_score + bonus
+    return round(max(0.0, min(100.0, combined)), 1)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 2 -- TEXT EXTRACTION (in memory, per-file failures isolated)
 # ══════════════════════════════════════════════════════════════════════════
 
+@st.cache_data(show_spinner=False)
 def read_pdf_bytes(data: bytes) -> str:
+    """Extract PDF text (cached per file content)."""
     from pypdf import PdfReader
 
     try:
@@ -387,7 +635,9 @@ def read_pdf_bytes(data: bytes) -> str:
     return "\n".join(parts)
 
 
+@st.cache_data(show_spinner=False)
 def read_docx_bytes(data: bytes) -> str:
+    """Extract DOCX text (cached per file content)."""
     import docx  # python-docx
 
     try:
@@ -627,6 +877,12 @@ def export_frame(rows: Sequence[Dict]) -> pd.DataFrame:
         {
             "Rank": r.get("Rank", ""),
             "Candidate_File_Name": r["Candidate_File_Name"],
+            "Candidate_Name": r.get("Candidate_Name", ""),
+            "Email": r.get("Email", ""),
+            "Phone_Number": r.get("Phone_Number", ""),
+            "Years_of_Experience": r.get("Years_of_Experience", 0.0),
+            "Skills_Summary": r.get("Skills_Summary", ""),
+            "AI_Score": r.get("AI_Score", 0.0),
             "Match_Score": r["Match_Score"],
             "Bonus_Points": r.get("Bonus_Points", 0.0),
             "Status": r["Status"],
@@ -641,10 +897,18 @@ def export_frame(rows: Sequence[Dict]) -> pd.DataFrame:
 
 def _row(name: str, score: float, status: str, remark: str,
          reasoning: str, strengths: Optional[List[str]] = None,
-         gaps: Optional[List[str]] = None, bonus: float = 0.0) -> Dict:
+         gaps: Optional[List[str]] = None, bonus: float = 0.0,
+         profile: Optional[Dict] = None) -> Dict:
+    profile = profile or {}
     return {
         "Rank": "",
         "Candidate_File_Name": name,
+        "Candidate_Name": profile.get("name", ""),
+        "Email": profile.get("email", ""),
+        "Phone_Number": profile.get("phone", ""),
+        "Years_of_Experience": profile.get("years_experience", 0.0),
+        "Skills_Summary": profile.get("skills_summary", ""),
+        "AI_Score": profile.get("ai_score", 0.0),
         "Match_Score": score,
         "Bonus_Points": bonus,
         "Status": status,
@@ -998,6 +1262,11 @@ st.caption(
     f"{MAX_TOTAL_MB} MB per batch. Nothing is stored: files are read in memory "
     "and discarded when the page reloads."
 )
+st.caption(
+    "🔒 Privacy: phone numbers, email addresses and postal addresses are "
+    "redacted from the text before it is sent to Gemini. The local engine "
+    "still evaluates the full CV, and contact details stay on this machine."
+)
 
 files = st.file_uploader(
     "Upload CVs",
@@ -1056,6 +1325,7 @@ if run:
 
         rows: List[Dict] = []
         n_ranked = n_excluded = n_errors = n_flagged = 0
+        redactions = {"emails": 0, "phones": 0, "addresses": 0}
         n = len(uploads)
 
         for idx, up in enumerate(uploads, 1):
@@ -1106,7 +1376,7 @@ if run:
                                  f"EXCLUDED -- {reason}"))
                 continue
 
-            # ── 4. score + bonus criteria ────────────────────────────────
+            # ── 4. score: 60% local engine + 40% Gemini (redacted) ───────
             try:
                 result = ev.score_candidate(text, work, custom_text)
             except Exception as exc:                      # noqa: BLE001
@@ -1116,13 +1386,33 @@ if run:
                                  f"Not evaluated: {_short(exc)}"))
                 continue
 
+            # Privacy layer: the raw text stays local (engine + contact
+            # lookup). Gemini only ever sees the redacted copy.
+            redacted, redaction_counts = redact_pii(text)
+            for key, value in redaction_counts.items():
+                redactions[key] = redactions.get(key, 0) + value
+            contacts = extract_contact_fields(text, up.name)
+            ai = gemini_screen(redacted, jd_text or "")
+
+            ai_score = float(ai.get("match_score", 0.0))
             bonus, hits = bonus_points(low, bonus_list, bonus_per, bonus_cap)
-            final = round(min(100.0, result.score + bonus), 1)
+            final = hybrid_score(result.score, ai_score, bonus)
             final_result = dataclasses.replace(result, score=final)
             reasoning = ev.build_reasoning(final_result)
 
+            profile_data = {
+                "name": ai.get("candidate_name") or contacts["name"],
+                "email": contacts["email"] or ai.get("email", ""),
+                "phone": contacts["phone"] or ai.get("phone", ""),
+                "years_experience": ai.get("years_experience", 0.0),
+                "skills_summary": ai.get("skills_summary", ""),
+                "ai_score": round(ai_score, 1),
+            }
+
             status_label = "RANKED"
             strengths, gaps = list(result.strengths), list(result.gaps)
+            strengths += [s for s in ai.get("strengths", []) if s not in strengths]
+            gaps += [g for g in ai.get("gaps", []) if g not in gaps]
             if verdict.review:
                 status_label = "REVIEW"
                 n_flagged += 1
@@ -1141,7 +1431,7 @@ if run:
                 up.name, final, status_label,
                 recruiter_remark(final, strengths, gaps, hits,
                                  final_result.core_met),
-                reasoning, strengths, gaps, bonus,
+                reasoning, strengths, gaps, bonus, profile_data,
             ))
 
         bar.progress(1.0, text="Done")
@@ -1149,6 +1439,15 @@ if run:
             f"**Processed {n} file(s)** — {n_ranked} scored · "
             f"{n_excluded} excluded · {n_errors} could not be read."
         )
+        if any(redactions.values()):
+            st.caption(
+                "🔒 Privacy: "
+                f"{redactions['emails']} email(s), {redactions['phones']} phone "
+                f"number(s) and {redactions['addresses']} address line(s) were "
+                "redacted before the Gemini call; the local engine used the raw text."
+            )
+        if gemini_model is None:
+            st.caption("ℹ️ Gemini unavailable — this run was scored by the local engine alone.")
 
         # Rank the scored rows (excluded / unreadable rows keep a blank rank).
         scored = [r for r in rows if r["Status"] in ("RANKED", "REVIEW")]
@@ -1198,6 +1497,8 @@ if run:
             "flagged": n_flagged,
             "title": profile.title,
             "experience": f"{lo:g}–{hi:g}",
+            "redactions": redactions,
+            "ai_enabled": gemini_model is not None,
         }
 
 
@@ -1274,6 +1575,18 @@ with tab2:
                 a.metric("Score", f"{r['Match_Score']:.1f}")
                 b.metric("Bonus", f"+{r['Bonus_Points']:g}")
                 c.metric("Status", r["Status"])
+
+                if r.get("Candidate_Name") or r.get("Email") or r.get("Phone_Number"):
+                    st.markdown(
+                        f"**👤 {r.get('Candidate_Name') or '—'}** · "
+                        f"{r.get('Email') or 'no email'} · "
+                        f"{r.get('Phone_Number') or 'no phone'} · "
+                        f"{float(r.get('Years_of_Experience') or 0):g} yrs experience"
+                    )
+                if r.get("Skills_Summary"):
+                    st.caption(f"🧠 {r['Skills_Summary']}")
+                if r.get("AI_Score"):
+                    st.caption(f"AI qualitative score (40% weight): {r['AI_Score']:g}/100")
 
                 st.markdown("**✅ Strengths**")
                 for s in r["Strengths"] or ["None recorded."]:
